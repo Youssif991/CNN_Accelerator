@@ -82,6 +82,8 @@ bin*/
 obj/
 compile*
 *.out
+*.vcd
+*.wdb
 
 ## ModelSim, UVVM
 transcript*
