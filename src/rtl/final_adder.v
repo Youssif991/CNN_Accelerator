@@ -18,11 +18,11 @@
 //
 //////////////////////////////////////////////////////////////////////////////////
 module final_adder #(
-    parameter Width = 18
+    parameter WIDTH = 18
 ) (
-    input  wire [Width-1:0] sum_i,
-    input  wire [Width-1:0] carry_i,
-    output wire [Width-1:0] product_o
+    input  wire [WIDTH-1:0] sum_i,
+    input  wire [WIDTH-1:0] carry_i,
+    output wire [WIDTH-1:0] product_o
 );
 
   assign product_o = sum_i + carry_i;
