@@ -27,12 +27,12 @@ for TB in $TB_FILES; do
     # so a missing match is not fatal. For example, tb_bqs_system_disp
     # exercises the same bqs_system top level as tb_bqs_system.
     DUT_NAME="${TB_NAME#tb_}"
-    DUT_FILE=$(find src/rtl -iname "${DUT_NAME}.v")
+    DUT_FILE=$(find src -iname "${DUT_NAME}.v" -not -path "src/tb/*")
 
     echo ""
     echo "Running: $TB_NAME  (DUT: ${DUT_FILE:-<all sources>})"
 
-    if ! iverilog -g2012 -o "$OUT_BIN" $(find src/rtl -name "*.v") "$TB"; then
+    if ! iverilog -g2012 -o "$OUT_BIN" $(find src -name "*.v" -not -path "src/tb/*") "$TB"; then
         echo "COMPILE ERROR: $TB_NAME"
         FAILED_LIST+=("$TB_NAME (compile error)")
         continue
@@ -47,6 +47,11 @@ for TB in $TB_FILES; do
     elif echo "$SIM_OUTPUT" | grep -qi "error"; then
         echo "FAILED: $TB_NAME (runtime error detected)"
         FAILED_LIST+=("$TB_NAME (runtime error)")
+    elif echo "$SIM_OUTPUT" | grep -q "SORRY"; then
+        # vvp aborts with SORRY (e.g. $monitor with an expression) but still
+        # exits 0, so a testbench that never ran must not be reported as PASSED.
+        echo "FAILED: $TB_NAME (vvp runtime abort)"
+        FAILED_LIST+=("$TB_NAME (vvp runtime abort)")
     else
         echo "PASSED: $TB_NAME"
         PASSED=$((PASSED+1))
