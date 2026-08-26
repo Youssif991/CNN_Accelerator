@@ -56,7 +56,6 @@ module tb_kernel_reg_bank;
     );
 
     // Golden reference
-    // Tracks one expected coefficient per tap, mirroring the DUT array.
     always @(posedge clk_i or negedge rst_n_i) begin : reference
         if (!rst_n_i) begin
             for (j = 0; j < N*N; j = j + 1) expected_kernel[j] <= 0;
@@ -66,7 +65,6 @@ module tb_kernel_reg_bank;
     end
 
     // Checker
-    // Compares every tap slice on negedge, after the posedge capture settled.
     always @(negedge clk_i) begin : check
         if (rst_n_i) begin
             for (j = 0; j < N*N; j = j + 1) begin
