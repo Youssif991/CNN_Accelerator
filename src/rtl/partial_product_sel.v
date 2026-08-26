@@ -33,7 +33,7 @@ module partial_product_sel #(
         })
             2'b00:   partial_product_o = {WIDTH{1'b0}};  // 0
             2'b01:   partial_product_o = x_ext_i;  // 1x
-            2'b10:   partial_product_o = x_ext_i <<< 1;  // 2x (arithmetic shift, still signed)
+            2'b10:   partial_product_o = x_ext_i << 1;  // 2x (left shift; wraps mod 2^WIDTH)
             default: partial_product_o = {WIDTH{1'b0}};
         endcase
 
