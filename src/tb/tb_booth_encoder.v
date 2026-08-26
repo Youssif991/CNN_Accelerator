@@ -4,20 +4,20 @@
 //
 // Create Date: 08/25/2026
 // Design Name: Booth encoder testbench
-// Module Name: tb_encoder
+// Module Name: tb_booth_encoder
 // Tool Versions: Vivado 2025.2
 // Description: Exhaustive testbench for encoder. Golden reference computes
 //              the Booth digit arithmetically and checks against the DUT's
 //              case-table output after each stimulus settles.
 //
-// Dependencies: encoder (encoder.v)
+// Dependencies: booth_encoder (src/booth_mult/booth_encoder.v)
 //
 // Revision:
 // Revision 0.01 - File Created
 // Additional Comments:
 //
 //////////////////////////////////////////////////////////////////////////////////
-module tb_encoder;
+module tb_booth_encoder;
     // DUT interconnect
     reg [2:0] data_i;
     wire neg_o;
@@ -31,7 +31,7 @@ module tb_encoder;
     reg expect_is_one;
     reg signed [2:0] digit;
     // DUT instantiation
-    encoder dut (
+    booth_encoder dut (
         .data_i(data_i),
         .neg_o(neg_o),
         .is_two_o(is_two_o),
@@ -79,8 +79,8 @@ module tb_encoder;
     end
     // VCD dump for waveform debugging
     initial begin
-        $dumpfile("tb_encoder.vcd");
-        $dumpvars(0, tb_encoder);
+        $dumpfile("tb_booth_encoder.vcd");
+        $dumpvars(0, tb_booth_encoder);
     end
 
 endmodule

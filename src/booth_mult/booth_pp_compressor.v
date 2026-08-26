@@ -4,14 +4,14 @@
 //
 // Create Date: 08/25/2026
 // Design Name: Radix-4 Booth Partial Product Compressor
-// Module Name: partial_product_compressor
+// Module Name: booth_pp_compressor
 // Tool Versions: Vivado 2025.2
 // Description: Carry-save reduction tree. Reduces the 5 shifted/sign-
 //              extended partial product rows down to 2 rows (sum, carry)
 //              using 3 chained 3:2 carry-save compression stages, built from
 //              the carry_save_adder module.
 //
-// Dependencies: partial_product_sel (partial_product_sel.v) - produces the
+// Dependencies: booth_pp_selector (booth_pp_selector.v) - produces the
 //               row0_i..row4_i inputs this module consumes
 //               carry_save_adder (carry_save_adder.v)
 //
@@ -20,7 +20,7 @@
 // Additional Comments:
 //
 //////////////////////////////////////////////////////////////////////////////////
-module partial_product_compressor #(
+module booth_pp_compressor #(
     parameter WIDTH = 18
 ) (
     input  wire [WIDTH-1:0] row0_i,

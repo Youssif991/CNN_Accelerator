@@ -4,11 +4,11 @@
 //
 // Create Date: 08/25/2026
 // Design Name: Radix-4 Booth Final Adder
-// Module Name: tb_final_adder
+// Module Name: tb_booth_final_adder
 // Tool Versions: Vivado 2025.2
 // Description: Testbench for the Radix-4 Booth final adder module.
 //
-// Dependencies: final_adder (src/rtl/final_adder.v)
+// Dependencies: booth_final_adder (src/booth_mult/booth_final_adder.v)
 //
 // Revision:
 // Revision 0.01 - File Created
@@ -16,7 +16,7 @@
 //
 //////////////////////////////////////////////////////////////////////////////////
 
-module tb_final_adder;
+module tb_booth_final_adder;
 
     // Parameters
     localparam WIDTH = 18;
@@ -33,7 +33,7 @@ module tb_final_adder;
     reg [WIDTH-1:0] expected_product_o;
 
     // Module instantiation
-    final_adder #(
+    booth_final_adder #(
         .WIDTH(WIDTH)
     ) dut (
         .sum_i(sum_i),
@@ -103,8 +103,8 @@ module tb_final_adder;
 
     // VCD dump for waveform debugging
     initial begin
-        $dumpfile("tb_final_adder.vcd");
-        $dumpvars(0, tb_final_adder);
+        $dumpfile("tb_booth_final_adder.vcd");
+        $dumpvars(0, tb_booth_final_adder);
     end
 
 endmodule

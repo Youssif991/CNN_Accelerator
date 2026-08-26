@@ -13,7 +13,7 @@
 //              Covers directed column-state and boundary/wrap-around vectors,
 //              then randomized full-width stimulus.
 //
-// Dependencies: carry_save_adder (src/rtl/carry_save_adder.v)
+// Dependencies: carry_save_adder (src/booth_mult/carry_save_adder.v)
 //
 // Revision:
 // Revision 0.01 - File Created

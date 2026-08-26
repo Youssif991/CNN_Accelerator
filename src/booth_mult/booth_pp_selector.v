@@ -4,7 +4,7 @@
 //
 // Create Date: MM/DD/YYYY
 // Design Name: Partial Product Selector
-// Module Name: partial_product_sel
+// Module Name: booth_pp_selector
 // Tool Versions: Vivado 2025.2
 // Description: LUT-based partial product selector. Given the Booth digit controls from
 // booth_encoder, selects 0, +X, +2X, -X, or -2X as a combinational case statement.
@@ -17,7 +17,7 @@
 //
 //////////////////////////////////////////////////////////////////////////////////
 
-module partial_product_sel #(
+module booth_pp_selector #(
     parameter WIDTH = 9
 ) (
     input  wire [WIDTH-1:0] x_ext_i,

@@ -4,7 +4,7 @@
 //
 // Create Date: 08/24/2026
 // Design Name: Radix-4 Booth Multiplier
-// Module Name: multiplier
+// Module Name: booth_mult_r4
 // Tool Versions: Vivado 2025.2
 // Description: Radix-4 Booth multiplier. Multiplies an unsigned pixel by a
 //              signed kernel coefficient, producing a signed product of
@@ -15,10 +15,10 @@
 //              selector, and the 5 partial-product rows feed the compressor
 //              and the final carry-propagate adder.
 //
-// Dependencies: encoder (encoder.v)
-//               partial_product_sel (partial_product_sel.v)
-//               partial_product_compressor (partial_product_compressor.v)
-//               final_adder (final_adder.v)
+// Dependencies: booth_encoder (booth_encoder.v)
+//               booth_pp_selector (booth_pp_selector.v)
+//               booth_pp_compressor (booth_pp_compressor.v)
+//               booth_final_adder (booth_final_adder.v)
 //
 // Revision:
 // Revision 0.01 - File Created
@@ -26,7 +26,7 @@
 //
 //////////////////////////////////////////////////////////////////////////////////
 
-module multiplier #(
+module booth_mult_r4 #(
     parameter PIXEL_WIDTH = 8,
     parameter COEFF_WIDTH = 8,
     parameter PROD_WIDTH  = PIXEL_WIDTH + COEFF_WIDTH + 2
@@ -69,14 +69,14 @@ module multiplier #(
             // Now we assign the data input for each group
             assign data_i[i] = y_prime[2*i+2 : 2*i];
 
-            encoder u_encoder (
+            booth_encoder u_encoder (
                 .data_i  (data_i[i]),
                 .neg_o   (is_neg_i[i]),
                 .is_one_o(is_one_i[i]),
                 .is_two_o(is_two_i[i])
             );  // Instantiate the encoder for each group
 
-            partial_product_sel #(
+            booth_pp_selector #(
                 .WIDTH(X_EXT_WIDTH)
             ) u_partial_product_sel (
                 .x_ext_i          (x_ext),
@@ -95,7 +95,7 @@ module multiplier #(
         end
     endgenerate
 
-    partial_product_compressor #(
+    booth_pp_compressor #(
         .WIDTH(PROD_WIDTH)
     ) u_partial_product_compressor (
         .row0_i (row[0]),
@@ -107,7 +107,7 @@ module multiplier #(
         .carry_o(carry_final)
     );  // Instantiate the partial product compressor
 
-    final_adder #(
+    booth_final_adder #(
         .WIDTH(PROD_WIDTH)
     ) u_final_adder (
         .sum_i     (sum_final),
