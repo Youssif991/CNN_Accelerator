@@ -4,7 +4,7 @@
 //
 // Create Date: 08/25/2026
 // Design Name: Radix-4 Booth Final Adder
-// Module Name: final_adder
+// Module Name: booth_final_adder
 // Tool Versions: Vivado 2025.2
 // Description: Final carry-propagate adder for the Booth multiplier. Combines
 //              the sum/carry row pair produced by the CSA compressor tree
@@ -17,7 +17,7 @@
 // Additional Comments:
 //
 //////////////////////////////////////////////////////////////////////////////////
-module final_adder #(
+module booth_final_adder #(
     parameter WIDTH = 18
 ) (
     input  wire [WIDTH-1:0] sum_i,

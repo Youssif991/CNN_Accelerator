@@ -4,7 +4,7 @@
 //
 // Create Date: 08/25/2026
 // Design Name: Booth encoder
-// Module Name: encoder
+// Module Name: booth_encoder
 // Tool Versions: Vivado 2025.2
 // Description: Radix-4 Booth encoder. Takes an overlapping 3-bit group of the
 //              multiplier (y[2i+1], y[2i], y[2i-1]) and recodes it into a
@@ -16,7 +16,7 @@
 // Additional Comments:
 //
 //////////////////////////////////////////////////////////////////////////////////
-module encoder (
+module booth_encoder (
     input  wire [2:0] data_i,
     output reg        neg_o,
     output reg        is_one_o,
