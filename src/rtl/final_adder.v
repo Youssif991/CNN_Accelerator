@@ -10,7 +10,7 @@
 //              the sum/carry row pair produced by the CSA compressor tree
 //              into the resolved two's-complement product.
 //
-// Dependencies: booth_pp_compressor (booth_pp_compressor.v)
+// Dependencies: none (leaf module)
 //
 // Revision:
 // Revision 0.01 - File Created

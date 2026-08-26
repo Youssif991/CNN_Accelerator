@@ -5,8 +5,8 @@
 // Create Date: 08/25/2026
 // Design Name: Booth encoder
 // Module Name: encoder
-// Project Name:
-// Target Devices: TBD
+// Project Name: CNN_Accelerator
+// Target Devices: PYNQ-Z2 (xc7z020clg400-1)
 // Tool Versions: Vivado 2025.2
 // Description: Radix-4 Booth encoder. Takes an overlapping 3-bit group of the
 //              multiplier (y[2i+1], y[2i], y[2i-1]) and recodes it into a

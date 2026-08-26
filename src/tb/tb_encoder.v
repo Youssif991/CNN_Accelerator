@@ -38,7 +38,7 @@ module tb_encoder;
         .is_one_o(is_one_o)
     );
     // Golden Reference
-    always @(*) begin
+    always @(*) begin : reference
         digit         = -2 * data_i[2] + data_i[1] + data_i[0];
         expect_neg    = (digit < 0);
         expect_is_two = (digit == 2) || (digit == -2);
@@ -46,7 +46,7 @@ module tb_encoder;
     end
 
     // Stimulus + Checker.
-    initial begin
+    initial begin : test
         for (i = 0; i < 8; i = i + 1) begin
             data_i = i[2:0];
             #1;
@@ -66,15 +66,15 @@ module tb_encoder;
                          is_one_o, expect_is_one);
             end
         end
-        if (errors == 0) $display("TEST PASSED");
-        else $display("TEST FAILED (%0d errors)", errors);
+        if (errors == 0) $display(" TEST PASSED — all checks matched");
+        else $display(" TEST FAILED — %0d mismatches found", errors);
         $finish;
     end
 
     // Live monitor: prints signal values on every change
     initial begin : monitor
         $monitor(
-            "Time=%0t | data_i=%b | dut_neg=%b dut_is_two=%b dut_is_one=%b | expected_neg=%b expected_is_two=%b expected_is_one=%b",
+            "t=%0t | data_i=%b | dut: neg=%b is_two=%b is_one=%b | exp: neg=%b is_two=%b is_one=%b",
             $time, data_i, neg_o, is_two_o, is_one_o, expect_neg, expect_is_two, expect_is_one);
     end
     // VCD dump for waveform debugging

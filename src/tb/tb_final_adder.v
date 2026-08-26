@@ -8,7 +8,7 @@
 // Tool Versions: Vivado 2025.2
 // Description: Testbench for the Radix-4 Booth final adder module.
 //
-// Dependencies: module (path)
+// Dependencies: final_adder (src/rtl/final_adder.v)
 //
 // Revision:
 // Revision 0.01 - File Created
@@ -20,6 +20,7 @@ module tb_final_adder;
 
     // Parameters
     localparam WIDTH = 18;
+    localparam NUM_TESTS = 100;
 
     // DUT interconnect
     reg [WIDTH-1:0] sum_i;
@@ -59,10 +60,28 @@ module tb_final_adder;
             if (product_o !== expected_product_o) begin
                 errors = errors + 1;
                 $display(
-                    "FAIL at time %0t: sum_i=%b carry_i=%b | dut product_o=%b | expected product_o=%b",
+                    "FAIL at time %0t: sum_i=%b carry_i=%b | dut=%b expected=%b",
                     $time, sum_i, carry_i, product_o, expected_product_o);
             end else begin
                 $display("  %b %b | %b    %b ", sum_i, carry_i, product_o, expected_product_o);
+            end
+        end
+
+        // --- Random stimulus ---
+        for (i = 0; i < NUM_TESTS; i = i + 1) begin
+            sum_i   = $urandom() % (1 << WIDTH);
+            carry_i = $urandom() % (1 << WIDTH);
+            #10;
+
+            // Golden reference
+            expected_product_o = sum_i + carry_i;
+
+            // Checker — compare DUT against reference
+            if (product_o !== expected_product_o) begin
+                errors = errors + 1;
+                $display(
+                    "FAIL at time %0t: sum_i=%h carry_i=%h | dut product_o=%h expected=%h",
+                    $time, sum_i, carry_i, product_o, expected_product_o);
             end
         end
 

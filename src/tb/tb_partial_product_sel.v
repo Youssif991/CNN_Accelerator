@@ -1,4 +1,23 @@
 `timescale 1ns / 1ps
+//////////////////////////////////////////////////////////////////////////////////
+// Engineer: Youssef
+//
+// Create Date: 08/25/2026
+// Design Name: Radix-4 Booth Partial Product Selector Testbench
+// Module Name: tb_partial_product_sel
+// Tool Versions: Vivado 2025.2
+// Description: Self-checking testbench for the LUT-based partial product
+//              selector. Golden reference computes the selected multiple
+//              arithmetically; the checker compares it against the DUT's
+//              case-table output after each stimulus settles.
+//
+// Dependencies: partial_product_sel (src/rtl/partial_product_sel.v)
+//
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+//
+//////////////////////////////////////////////////////////////////////////////////
 
 module tb_partial_product_sel;
 
@@ -175,9 +194,9 @@ module tb_partial_product_sel;
 
     // Live monitor
     initial begin : monitor
-        $monitor("Time=%0t | x_ext_i=%d | pp_o=%d (0x%h) exp=%d (0x%h)", $time, $signed(x_ext_i),
-                 $signed(partial_product_o), partial_product_o,
-                 $signed(expected_partial_product_o), expected_partial_product_o);
+        $monitor("Time=%0t | x_ext_i=%d | pp_o=%d (0x%h) exp=%d (0x%h)", $time, x_ext_i,
+                 partial_product_o, partial_product_o, expected_partial_product_o,
+                 expected_partial_product_o);
     end
 
     // VCD dump for waveform debugging
