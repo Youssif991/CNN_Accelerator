@@ -4,7 +4,7 @@
 //
 // Create Date: 08/26/2026
 // Design Name: Radix-4 Booth Partial Product Compressor Testbench
-// Module Name: tb_partial_product_compressor
+// Module Name: tb_booth_pp_compressor
 // Tool Versions: Vivado 2025.2
 // Description: Self-checking testbench for the partial-product compressor.
 //              The compressor reduces 5 partial-product rows to a (sum, carry)
@@ -14,8 +14,8 @@
 //              computes the 5-row sum directly in WIDTH-bit arithmetic; the
 //              checker compares sum_o + carry_o against it after each stimulus.
 //
-// Dependencies: partial_product_compressor (src/rtl/partial_product_compressor.v)
-//               carry_save_adder          (src/rtl/carry_save_adder.v)
+// Dependencies: booth_pp_compressor (src/booth_mult/booth_pp_compressor.v)
+//               carry_save_adder          (src/booth_mult/carry_save_adder.v)
 //
 // Revision:
 // Revision 0.01 - File Created
@@ -23,7 +23,7 @@
 //
 //////////////////////////////////////////////////////////////////////////////////
 
-module tb_partial_product_compressor;
+module tb_booth_pp_compressor;
 
     // Parameters
     localparam WIDTH = 18;
@@ -48,7 +48,7 @@ module tb_partial_product_compressor;
     reg [WIDTH-1:0] expected_total = 0;
 
     // Module instantiation
-    partial_product_compressor #(
+    booth_pp_compressor #(
         .WIDTH(WIDTH)
     ) dut (
         .row0_i (row0_i),
@@ -221,8 +221,8 @@ module tb_partial_product_compressor;
 
     // VCD dump for waveform debugging
     initial begin
-        $dumpfile("tb_partial_product_compressor.vcd");
-        $dumpvars(0, tb_partial_product_compressor);
+        $dumpfile("tb_booth_pp_compressor.vcd");
+        $dumpvars(0, tb_booth_pp_compressor);
     end
 
 endmodule

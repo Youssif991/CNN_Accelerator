@@ -4,7 +4,7 @@
 //
 // Create Date: 08/26/2026
 // Design Name: Radix-4 Booth Multiplier Testbench
-// Module Name: tb_multiplier
+// Module Name: tb_booth_mult_r4
 // Tool Versions: Vivado 2025.2
 // Description: Self-checking testbench for the radix-4 Booth multiplier.
 //              Uses a golden reference model (unsigned pixel x signed
@@ -12,7 +12,7 @@
 //              settles. Covers directed edge cases (zero, extremes, negative
 //              coefficients) and randomized full-range stimulus.
 //
-// Dependencies: multiplier (src/rtl/multiplier.v)
+// Dependencies: booth_mult_r4 (src/booth_mult/booth_mult_r4.v)
 //
 // Revision:
 // Revision 0.01 - File Created
@@ -20,7 +20,7 @@
 //
 //////////////////////////////////////////////////////////////////////////////////
 
-module tb_multiplier;
+module tb_booth_mult_r4;
 
     // Parameters
     localparam PIXEL_WIDTH = 8;
@@ -39,7 +39,7 @@ module tb_multiplier;
     reg signed [PROD_WIDTH-1:0] expected_product_o = 0;  // Golden reference
 
     // Module instantiation
-    multiplier #(
+    booth_mult_r4 #(
         .PIXEL_WIDTH(PIXEL_WIDTH),
         .COEFF_WIDTH(COEFF_WIDTH),
         .PROD_WIDTH (PROD_WIDTH)
@@ -131,8 +131,8 @@ module tb_multiplier;
 
     // VCD dump for waveform debugging
     initial begin
-        $dumpfile("tb_multiplier.vcd");
-        $dumpvars(0, tb_multiplier);
+        $dumpfile("tb_booth_mult_r4.vcd");
+        $dumpvars(0, tb_booth_mult_r4);
     end
 
 endmodule
