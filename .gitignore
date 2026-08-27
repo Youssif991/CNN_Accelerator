@@ -65,6 +65,12 @@ credentials.sh
 VivadoProject
 SimulationLib
 profpga
+clockInfo.txt
+synth_out/
+
+# Vivado synthesis artifacts
+*.dcp
+*.rpt
 
 # Vivado simulation artifacts
 xsim.dir/
