@@ -39,10 +39,10 @@ module tb_accelerator_top;
     localparam OUT_TOTAL = OUT_IMAGE_WIDTH * OUT_IMAGE_HEIGHT;
     localparam OUT_ADDR_WIDTH = $clog2(OUT_TOTAL);
     localparam PROD_WIDTH = PIXEL_WIDTH + COEFF_WIDTH + 2;
-    localparam SUM_WIDTH = PROD_WIDTH + $clog2(N*N);
+    localparam SUM_WIDTH = PROD_WIDTH + $clog2(N * N);
     localparam BITS_DROPPED = SUM_WIDTH - OUT_WIDTH;
-    localparam SAT_MAX = (1 << (OUT_WIDTH-1)) - 1;  // +32767
-    localparam SAT_MIN = -(1 << (OUT_WIDTH-1));  // -32768
+    localparam SAT_MAX = (1 << (OUT_WIDTH - 1)) - 1;  // +32767
+    localparam SAT_MIN = -(1 << (OUT_WIDTH - 1));  // -32768
 
     // DUT interface
     reg clk_i;
@@ -67,20 +67,20 @@ module tb_accelerator_top;
     integer f;  // frame / buffer index
 
     // Golden reference model data
-    reg [PIXEL_WIDTH-1:0] ref_img [0:2*TOTAL_PIXELS-1];  // 2x double-buffered
-    reg signed [COEFF_WIDTH-1:0] ref_kernel [0:N*N-1];
+    reg [PIXEL_WIDTH-1:0] ref_img[0:2*TOTAL_PIXELS-1];  // 2x double-buffered
+    reg signed [COEFF_WIDTH-1:0] ref_kernel[0:N*N-1];
     reg signed [SUM_WIDTH-1:0] ref_sum;
     reg signed [SUM_WIDTH-1:0] ref_shifted;
     reg signed [OUT_WIDTH-1:0] ref_out;
 
     // Module instantiation
     accelerator_top #(
-        .N            (N),
-        .IMAGE_WIDTH  (IMAGE_WIDTH),
-        .IMAGE_HEIGHT (IMAGE_HEIGHT),
-        .PIXEL_WIDTH  (PIXEL_WIDTH),
-        .COEFF_WIDTH  (COEFF_WIDTH),
-        .OUT_WIDTH    (OUT_WIDTH)
+        .N           (N),
+        .IMAGE_WIDTH (IMAGE_WIDTH),
+        .IMAGE_HEIGHT(IMAGE_HEIGHT),
+        .PIXEL_WIDTH (PIXEL_WIDTH),
+        .COEFF_WIDTH (COEFF_WIDTH),
+        .OUT_WIDTH   (OUT_WIDTH)
     ) dut (
         .clk_i            (clk_i),
         .rst_n_i          (rst_n_i),
@@ -109,8 +109,8 @@ module tb_accelerator_top;
         input [PIX_ADDR_WIDTH:0] addr;
         input [PIXEL_WIDTH-1:0] data;
         begin
-            img_wr_addr_i = addr;
-            img_wr_data_i = data;
+            img_wr_addr_i  = addr;
+            img_wr_data_i  = data;
             img_wr_valid_i = 1;
             @(negedge clk_i);
             img_wr_valid_i = 0;
@@ -121,7 +121,7 @@ module tb_accelerator_top;
     task write_kernel;
         input [COEFF_WIDTH-1:0] coef;
         begin
-            kernel_wr_data_i = coef;
+            kernel_wr_data_i  = coef;
             kernel_wr_valid_i = 1;
             @(negedge clk_i);
             kernel_wr_valid_i = 0;
@@ -140,7 +140,7 @@ module tb_accelerator_top;
         input integer b;
         begin
             for (w = 0; w < TOTAL_PIXELS; w = w + 1) begin
-                write_pixel({b[0], w[PIX_ADDR_WIDTH-1:0]}, ref_img[b*TOTAL_PIXELS + w]);
+                write_pixel({b[0], w[PIX_ADDR_WIDTH-1:0]}, ref_img[b*TOTAL_PIXELS+w]);
             end
         end
     endtask
@@ -152,7 +152,7 @@ module tb_accelerator_top;
             start_i = 1;
             @(negedge clk_i);
             start_i = 0;
-            for (t = 0; t < N*N; t = t + 1) begin
+            for (t = 0; t < N * N; t = t + 1) begin
                 write_kernel(ref_kernel[t]);
                 if (gap_writes && ((t % gap_writes) == (gap_writes - 1))) @(negedge clk_i);
             end
@@ -171,11 +171,11 @@ module tb_accelerator_top;
                 r = a / OUT_IMAGE_WIDTH;
                 c = a % OUT_IMAGE_WIDTH;
                 ref_sum = 0;
-                for (t = 0; t < N*N; t = t + 1) begin
-                    ref_sum = ref_sum + $signed({1'b0, ref_img[b*TOTAL_PIXELS +
-                        (r + t/N)*IMAGE_WIDTH + c + t%N]}) * ref_kernel[t];
+                for (t = 0; t < N * N; t = t + 1) begin
+                    ref_sum = ref_sum + $signed(
+                        {1'b0, ref_img[b*TOTAL_PIXELS+(r+t/N)*IMAGE_WIDTH+c+t%N]}) * ref_kernel[t];
                 end
-                ref_shifted = ref_sum + (1 << (BITS_DROPPED-1));
+                ref_shifted = ref_sum + (1 << (BITS_DROPPED - 1));
                 ref_shifted = ref_shifted >>> BITS_DROPPED;
                 if (ref_shifted > SAT_MAX) begin
                     ref_out = SAT_MAX;
@@ -214,10 +214,10 @@ module tb_accelerator_top;
         @(negedge clk_i);
 
         // Directed test 1: all-zero kernel and image produce all-zero outputs
-        for (t = 0; t < N*N; t = t + 1) ref_kernel[t] = 0;
+        for (t = 0; t < N * N; t = t + 1) ref_kernel[t] = 0;
         for (w = 0; w < TOTAL_PIXELS; w = w + 1) begin
             ref_img[w] = 0;
-            ref_img[TOTAL_PIXELS + w] = 0;
+            ref_img[TOTAL_PIXELS+w] = 0;
         end
         load_image(0);
         buf_sel_i = 0;
@@ -226,7 +226,7 @@ module tb_accelerator_top;
         check_outputs(0);
 
         // Directed test 2: random kernel and image on buffer 0
-        for (t = 0; t < N*N; t = t + 1) ref_kernel[t] = $urandom;
+        for (t = 0; t < N * N; t = t + 1) ref_kernel[t] = $urandom;
         for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[w] = $urandom;
         load_image(0);
         buf_sel_i = 0;
@@ -237,7 +237,7 @@ module tb_accelerator_top;
         // Directed test 3: input double buffering.
         // Load buffer 1, compute on it, and write a fresh image into buffer 0
         // during the compute pass; then compute buffer 0 and verify both.
-        for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[TOTAL_PIXELS + w] = $urandom;
+        for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[TOTAL_PIXELS+w] = $urandom;
         load_image(1);
         buf_sel_i = 1;
         run_frame(0);
@@ -258,8 +258,8 @@ module tb_accelerator_top;
         // Two more random frames with host-paced kernel writes (gaps every
         // third write) alternating buffers.
         for (f = 0; f < 2; f = f + 1) begin
-            for (t = 0; t < N*N; t = t + 1) ref_kernel[t] = $urandom;
-            for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[f*TOTAL_PIXELS + w] = $urandom;
+            for (t = 0; t < N * N; t = t + 1) ref_kernel[t] = $urandom;
+            for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[f*TOTAL_PIXELS+w] = $urandom;
             load_image(f);
             buf_sel_i = f[0];
             run_frame(3);
