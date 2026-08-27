@@ -9,9 +9,11 @@
 // Description: Frame controller for the convolution accelerator. Sequences
 //              kernel loading (LOAD), input-stream fill (FILL), the compute
 //              pass (COMPUTE) with one output pixel per cycle, and the done
-//              handoff. Outputs are Moore (state-derived); result_valid_o is
-//              registered to align with the combinational MAC result that
-//              settles one cycle after its window block completes.
+//              handoff. The kernel load is host-paced: LOAD advances one
+//              coefficient per kernel_wr_valid_i pulse. Outputs are Moore
+//              (state-derived); result_valid_o is registered to align with
+//              the combinational MAC result that settles one cycle after its
+//              window block completes.
 //
 // Dependencies: none (drives the datapath and the address generators)
 //
@@ -32,6 +34,8 @@ module conv_fsm #(
     input wire clk_i,
     input wire rst_n_i,
     input wire start_i,  // Frame start request
+    input wire buf_sel_i,  // Input buffer to convolve (latched at frame start)
+    input wire kernel_wr_valid_i,  // Kernel coefficient write valid (host-paced)
     input wire [COEFF_WIDTH-1:0] kernel_data_i,  // Kernel coefficient data in
     input wire [PIX_ADDR_WIDTH-1:0] pix_addr_i,  // Current input pixel index
     input wire pix_last_i,  // Last input pixel is being presented
@@ -41,6 +45,7 @@ module conv_fsm #(
     output wire mem_rd_en_o,  // Input memory read enable
     output wire result_valid_o,  // Output pixel valid (pipeline aligned)
     output wire rst_count_o,  // Reset the address-generator counters
+    output wire rd_buf_o,  // Input buffer selected for the current frame
     output wire busy_o,  // Frame in progress
     output wire done_o,  // Frame complete
     output wire [STATE_WIDTH-1:0] state_o  // Current state (observability)
@@ -74,6 +79,8 @@ module conv_fsm #(
     reg result_valid_q;
     // Result valid (next)
     reg result_valid_d;
+    // Input buffer selected for the current frame (current)
+    reg rd_buf_q;
 
     // Pixel row/column of the current input pixel
     wire [PIX_ADDR_WIDTH-1:0] pix_row = pix_addr_i / IMAGE_WIDTH;
@@ -93,10 +100,12 @@ module conv_fsm #(
             S_IDLE: begin
                 if (start_i) state_d = S_LOAD;
             end
-            // Load the N*N kernel coefficients, one per cycle
+            // Load the N*N kernel coefficients, one per host write
             S_LOAD: begin
-                load_cnt_d = (load_cnt_q == N*N-1) ? 0 : load_cnt_q + 1;
-                if (load_cnt_q == N*N-1) state_d = S_FILL;
+                if (kernel_wr_valid_i) begin
+                    load_cnt_d = (load_cnt_q == N*N-1) ? 0 : load_cnt_q + 1;
+                    if (load_cnt_q == N*N-1) state_d = S_FILL;
+                end
             end
             // Prime the line buffers and the window with the first rows
             S_FILL: begin
@@ -125,11 +134,14 @@ module conv_fsm #(
             load_cnt_q <= 0;
             exit_cnt_q <= 0;
             result_valid_q <= 1'b0;
+            rd_buf_q <= 1'b0;
         end else begin
             state_q <= state_d;
             load_cnt_q <= load_cnt_d;
             exit_cnt_q <= exit_cnt_d;
             result_valid_q <= result_valid_d;
+            // Latch the read buffer only when the frame actually starts
+            if (start_i && (state_q == S_IDLE)) rd_buf_q <= buf_sel_i;
         end
     end
 
@@ -142,6 +154,7 @@ module conv_fsm #(
     assign rst_count_o = (state_q == S_LOAD);
     assign busy_o = (state_q == S_LOAD) || (state_q == S_FILL) || (state_q == S_COMPUTE);
     assign done_o = (state_q == S_DONE);
+    assign rd_buf_o = rd_buf_q;
     assign state_o = state_q;
 
 endmodule
