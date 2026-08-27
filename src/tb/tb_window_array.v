@@ -55,9 +55,6 @@ module tb_window_array;
     );
 
     // Golden reference
-    // Models the same shift rule as the DUT in software: on a valid cycle,
-    // every row shifts left by one column and the new column comes from
-    // data_row_i (one pixel per row).
     always @(posedge clk_i or negedge rst_n_i) begin : reference
         if (!rst_n_i) begin
             for (r = 0; r < N; r = r + 1) begin
