@@ -36,6 +36,12 @@ puts "--> Writing reports"
 report_utilization -hierarchical -file $out_dir/utilization.rpt
 report_timing_summary -file $out_dir/timing_summary.rpt
 report_timing -max_paths 5 -file $out_dir/timing_worst.rpt
+
+# Annotate switching activity from the end-to-end simulation, if available
+if {[file exists synth_out/activity.saif]} {
+    puts "--> Annotating switching activity (synth_out/activity.saif)"
+    read_saif synth_out/activity.saif -strip_path tb_accelerator_top/dut
+}
 report_power -file $out_dir/power.rpt
 report_clock_utilization -file $out_dir/clock_util.rpt
 write_checkpoint -force $out_dir/${top}_routed.dcp
