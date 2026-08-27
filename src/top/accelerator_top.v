@@ -11,10 +11,13 @@
 //              the frame controller, and the address generators with the
 //              input and output feature-map memories. The host loads the
 //              kernel (host-paced, one coefficient per valid pulse) and the
-//              input image (2x double-buffered distributed RAM with an
-//              asynchronous read), then pulses start_i; the accelerator
-//              streams one output pixel per cycle and the host reads the
-//              results back through the output block-RAM read port.
+//              input image (2x double-buffered distributed RAM with a
+//              registered read matching the block-RAM inference), then
+//              pulses start_i; the accelerator streams one output pixel per
+//              cycle and the host reads the results back through the output
+//              block-RAM read port. The MAC-to-result chain is pipelined
+//              (PIPE_STAGES register stages) to raise Fmax; the result-valid
+//              flag shifts with the data.
 //
 // Dependencies: conv_fsm (src/control/conv_fsm.v)
 //               addr_gen_in (src/control/addr_gen_in.v)
@@ -40,6 +43,7 @@ module accelerator_top #(
     parameter COEFF_WIDTH = 8,  // Kernel coefficient width (signed)
     parameter OUT_WIDTH = 16,  // Output pixel width (signed)
     parameter ROUND_ENABLE = 1,  // Round-half-up before truncation
+    parameter PIPE_STAGES = 3,  // Pipeline stages after the window array
     parameter PIX_ADDR_WIDTH = $clog2(IMAGE_WIDTH * IMAGE_HEIGHT),
     parameter OUT_IMAGE_WIDTH = IMAGE_WIDTH - N + 1,
     parameter OUT_IMAGE_HEIGHT = IMAGE_HEIGHT - N + 1,
@@ -88,23 +92,85 @@ module accelerator_top #(
     wire signed [OUT_WIDTH-1:0] result;
     wire [PIXEL_WIDTH-1:0] img_rd_data;
 
-    // Input image storage: 2x double-buffered distributed RAM (async read).
-    // The read address is {rd_buf, pix_addr}; the write port is independent,
-    // so the host can load the next frame while the current one computes.
+    // Pipeline interconnect (registers between the combinational blocks)
+    wire [N*N*PROD_WIDTH-1:0] products_to_tree;
+    wire signed [SUM_WIDTH-1:0] sum_to_sat;
+    wire result_valid_p;  // result valid shifted with the pipeline data
+
+    // Pipeline stage 1: register the MAC products
+    generate
+        if (PIPE_STAGES >= 1) begin : gen_pipe_products
+            reg [N*N*PROD_WIDTH-1:0] products_p1;
+            always @(posedge clk_i or negedge rst_n_i) begin : stage
+                if (!rst_n_i) products_p1 <= 0;
+                else products_p1 <= products;
+            end
+            assign products_to_tree = products_p1;
+        end else begin : gen_no_pipe_products
+            assign products_to_tree = products;
+        end
+    endgenerate
+
+    // Pipeline stage 2: register the adder-tree sum
+    generate
+        if (PIPE_STAGES >= 2) begin : gen_pipe_sum
+            reg signed [SUM_WIDTH-1:0] sum_p1;
+            always @(posedge clk_i or negedge rst_n_i) begin : stage
+                if (!rst_n_i) sum_p1 <= 0;
+                else sum_p1 <= conv_sum;
+            end
+            assign sum_to_sat = sum_p1;
+        end else begin : gen_no_pipe_sum
+            assign sum_to_sat = conv_sum;
+        end
+    endgenerate
+
+    // Pipeline valid: shifts with the data through the pipeline stages
+    generate
+        if (PIPE_STAGES == 1) begin : gen_pipe_valid1
+            reg valid_p1;
+            always @(posedge clk_i or negedge rst_n_i) begin : stage
+                if (!rst_n_i) valid_p1 <= 1'b0;
+                else valid_p1 <= result_valid;
+            end
+            assign result_valid_p = valid_p1;
+        end else if (PIPE_STAGES >= 2) begin : gen_pipe_validn
+            reg [PIPE_STAGES-1:0] valid_p1;
+            always @(posedge clk_i or negedge rst_n_i) begin : stage
+                if (!rst_n_i) valid_p1 <= 0;
+                else valid_p1 <= {valid_p1[PIPE_STAGES-2:0], result_valid};
+            end
+            assign result_valid_p = valid_p1[PIPE_STAGES-1];
+        end else begin : gen_no_pipe_valid
+            assign result_valid_p = result_valid;
+        end
+    endgenerate
+
+    // Input image storage: 2x double-buffered distributed RAM. The read is
+    // explicitly registered (models the block-RAM read latency) so the RTL
+    // matches the synthesized memory exactly; the read adds one stage to the
+    // datapath pipeline (PIPE_STAGES includes it).
     reg [PIXEL_WIDTH-1:0] img_mem [0:2*TOTAL_PIXELS-1];
 
     always @(posedge clk_i) begin : img_write
         if (img_wr_valid_i) img_mem[img_wr_addr_i] <= img_wr_data_i;
     end
 
-    assign img_rd_data = img_mem[{rd_buf, pix_addr}];
+    reg [PIXEL_WIDTH-1:0] img_rd_q;
+
+    always @(posedge clk_i or negedge rst_n_i) begin : img_read
+        if (!rst_n_i) img_rd_q <= 0;
+        else img_rd_q <= img_mem[{rd_buf, pix_addr}];
+    end
+
+    assign img_rd_data = img_rd_q;
 
     // Output storage: 1 block RAM (simple dual-port, registered read)
     reg [OUT_WIDTH-1:0] res_mem [0:OUT_TOTAL-1];
     reg [OUT_WIDTH-1:0] res_rd_data_q;
 
     always @(posedge clk_i) begin : res_write
-        if (result_valid) res_mem[out_addr] <= result;
+        if (result_valid_p) res_mem[out_addr] <= result;
     end
 
     always @(posedge clk_i) begin : res_read
@@ -119,6 +185,7 @@ module accelerator_top #(
         .IMAGE_WIDTH   (IMAGE_WIDTH),
         .IMAGE_HEIGHT  (IMAGE_HEIGHT),
         .COEFF_WIDTH   (COEFF_WIDTH),
+        .PIPE_STAGES   (PIPE_STAGES),
         .PIX_ADDR_WIDTH(PIX_ADDR_WIDTH),
         .STATE_WIDTH   (3)
     ) u_fsm (
@@ -163,7 +230,7 @@ module accelerator_top #(
     ) u_out (
         .clk_i       (clk_i),
         .rst_n_i     (rst_n_i),
-        .en_i        (result_valid),
+        .en_i        (result_valid_p),
         .rst_count_i (rst_count),
         .addr_o      (out_addr),
         .last_o      ()
@@ -231,7 +298,7 @@ module accelerator_top #(
         .PROD_WIDTH (PROD_WIDTH),
         .SUM_WIDTH  (SUM_WIDTH)
     ) u_adder_tree (
-        .products_i (products),
+        .products_i (products_to_tree),
         .sum_o      (conv_sum)
     );
 
@@ -240,7 +307,7 @@ module accelerator_top #(
         .OUT_WIDTH    (OUT_WIDTH),
         .ROUND_ENABLE (ROUND_ENABLE)
     ) u_sat_round_unit (
-        .sum_i    (conv_sum),
+        .sum_i    (sum_to_sat),
         .result_o (result)
     );
 
