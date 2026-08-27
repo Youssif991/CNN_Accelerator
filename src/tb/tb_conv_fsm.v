@@ -46,6 +46,8 @@ module tb_conv_fsm;
     reg clk_i;
     reg rst_n_i;
     reg start_i;
+    reg buf_sel_i;
+    reg kernel_wr_valid_i;
     reg [COEFF_WIDTH-1:0] kernel_data_i;
     wire kernel_we_o;
     wire [$clog2(N*N)-1:0] kernel_addr_o;
@@ -53,6 +55,7 @@ module tb_conv_fsm;
     wire mem_rd_en_o;
     wire result_valid_o;
     wire rst_count_o;
+    wire rd_buf_o;
     wire busy_o;
     wire done_o;
     wire [STATE_WIDTH-1:0] state_o;
@@ -66,9 +69,11 @@ module tb_conv_fsm;
     // Test infrastructure
     integer i;  // test loop counter
     integer errors = 0;
-    integer load_count;  // kernel write-enable pulses per frame
+    integer load_count;  // accepted kernel writes per frame
     integer shift_count;  // shift-valid cycles per frame
     integer valid_count;  // result-valid pulses per frame
+    integer kernel_wr_count;  // kernel write pulses issued per frame
+    integer gap_cnt;  // cycle counter for the gapped-load test
     reg seen_done;
     reg second_frame_started;
 
@@ -84,6 +89,8 @@ module tb_conv_fsm;
         .clk_i         (clk_i),
         .rst_n_i       (rst_n_i),
         .start_i       (start_i),
+        .buf_sel_i     (buf_sel_i),
+        .kernel_wr_valid_i(kernel_wr_valid_i),
         .kernel_data_i (kernel_data_i),
         .pix_addr_i    (pix_addr),
         .pix_last_i    (pix_last),
@@ -93,6 +100,7 @@ module tb_conv_fsm;
         .mem_rd_en_o   (mem_rd_en_o),
         .result_valid_o(result_valid_o),
         .rst_count_o   (rst_count_o),
+        .rd_buf_o      (rd_buf_o),
         .busy_o        (busy_o),
         .done_o        (done_o),
         .state_o       (state_o)
@@ -144,6 +152,7 @@ module tb_conv_fsm;
     reg [$clog2(N*N)-1:0] ref_load_q;  // kernel load index
     reg [1:0] ref_exit_q;  // compute-exit countdown
     reg expected_result_valid;
+    reg expected_rd_buf;
     reg [OUT_ADDR_WIDTH-1:0] expected_out_cnt_q;
 
     always @(posedge clk_i or negedge rst_n_i) begin : reference
@@ -153,8 +162,12 @@ module tb_conv_fsm;
             ref_load_q <= 0;
             ref_exit_q <= 0;
             expected_result_valid <= 1'b0;
+            expected_rd_buf <= 1'b0;
             expected_out_cnt_q <= 0;
         end else begin
+            // Read buffer: latch only when the frame actually starts
+            if (start_i && (ref_phase_q == PH_IDLE)) expected_rd_buf <= buf_sel_i;
+
             // Shift counter: restart at frame start, count while shifting
             if (rst_count_o) begin
                 ref_shifts_q <= 0;
@@ -167,10 +180,12 @@ module tb_conv_fsm;
                 PH_IDLE: begin
                     if (start_i) ref_phase_q <= PH_LOAD;
                 end
-                // Load the N*N kernel coefficients, one per cycle
+                // Load the N*N kernel coefficients, one per host write
                 PH_LOAD: begin
-                    ref_load_q <= (ref_load_q == N*N-1) ? 0 : ref_load_q + 1;
-                    if (ref_load_q == N*N-1) ref_phase_q <= PH_FILL;
+                    if (kernel_wr_valid_i) begin
+                        ref_load_q <= (ref_load_q == N*N-1) ? 0 : ref_load_q + 1;
+                        if (ref_load_q == N*N-1) ref_phase_q <= PH_FILL;
+                    end
                 end
                 // Prime the line buffers and the window with the first rows
                 PH_FILL: begin
@@ -260,6 +275,11 @@ module tb_conv_fsm;
                 errors = errors + 1;
                 $display("FAIL t=%0t: done=%b expected=%b", $time, done_o, expected_done);
             end
+            if (rd_buf_o !== expected_rd_buf) begin
+                errors = errors + 1;
+                $display("FAIL t=%0t: rd_buf=%b expected=%b", $time, rd_buf_o,
+                         expected_rd_buf);
+            end
             if (out_addr !== expected_out_cnt_q) begin
                 errors = errors + 1;
                 $display("FAIL t=%0t: out_addr=%0d expected=%0d", $time, out_addr,
@@ -277,6 +297,8 @@ module tb_conv_fsm;
     initial begin : test
         // Drive all inputs low and assert reset
         start_i = 0;
+        buf_sel_i = 0;
+        kernel_wr_valid_i = 0;
         kernel_data_i = 0;
         rst_n_i = 0;
 
@@ -292,18 +314,27 @@ module tb_conv_fsm;
         end
 
         // Directed test 2: a full frame with exact per-phase counts
-        // Expected: 9 kernel writes, 1026 shift cycles (66 fill + 958
-        // compute + 2 exit), 900 result-valid pulses, then done and re-arm.
+        // Expected: 9 accepted kernel writes, 1026 shift cycles (66 fill +
+        // 958 compute + 2 exit), 900 result-valid pulses, then done/re-arm.
         load_count = 0;
         shift_count = 0;
         valid_count = 0;
+        kernel_wr_count = 0;
         seen_done = 0;
 
         start_i = 1;
         repeat (1300) begin
             @(negedge clk_i);
             start_i = 0;  // one-cycle start pulse
-            if (kernel_we_o) load_count = load_count + 1;
+            // Issue the N*N kernel writes back-to-back after the start
+            if (kernel_wr_count < N*N) begin
+                kernel_wr_valid_i = 1;
+                kernel_data_i = kernel_wr_count;
+                kernel_wr_count = kernel_wr_count + 1;
+            end else begin
+                kernel_wr_valid_i = 0;
+            end
+            if (kernel_we_o && kernel_wr_valid_i) load_count = load_count + 1;
             if (shift_valid_o) shift_count = shift_count + 1;
             if (result_valid_o) valid_count = valid_count + 1;
             if (done_o) seen_done = 1;
@@ -332,13 +363,63 @@ module tb_conv_fsm;
             $display("FAIL t=%0t: did not re-arm to idle (state=%0d)", $time, state_o);
         end
 
-        // Directed test 3: a second frame starts cleanly
+        // Directed test 3: host-paced load with gaps between kernel writes
+        // The FSM must wait in LOAD and still produce a full frame.
+        load_count = 0;
+        valid_count = 0;
+        kernel_wr_count = 0;
+        gap_cnt = 0;
+        seen_done = 0;
+
+        start_i = 1;
+        repeat (1500) begin
+            @(negedge clk_i);
+            start_i = 0;  // one-cycle start pulse
+            gap_cnt = gap_cnt + 1;
+            // Issue one kernel write every three cycles (two-cycle gaps)
+            if ((gap_cnt % 3 == 1) && (kernel_wr_count < N*N)) begin
+                kernel_wr_valid_i = 1;
+                kernel_wr_count = kernel_wr_count + 1;
+            end else begin
+                kernel_wr_valid_i = 0;
+            end
+            kernel_data_i = kernel_wr_count;
+            if (kernel_we_o && kernel_wr_valid_i) load_count = load_count + 1;
+            if (result_valid_o) valid_count = valid_count + 1;
+            if (done_o) seen_done = 1;
+        end
+
+        if (load_count !== N*N) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: gapped kernel writes=%0d expected %0d", $time, load_count,
+                     N*N);
+        end
+        if (valid_count !== OUT_TOTAL) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: gapped frame pulses=%0d expected %0d", $time, valid_count,
+                     OUT_TOTAL);
+        end
+        if (!seen_done) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: gapped frame never completed", $time);
+        end
+
+        // Directed test 4: a second frame on the other buffer starts cleanly
         second_frame_started = 0;
         valid_count = 0;
+        kernel_wr_count = 0;
+        buf_sel_i = 1;
+
         start_i = 1;
         repeat (1100) begin
             @(negedge clk_i);
             start_i = 0;  // one-cycle start pulse
+            if (kernel_wr_count < N*N) begin
+                kernel_wr_valid_i = 1;
+                kernel_wr_count = kernel_wr_count + 1;
+            end else begin
+                kernel_wr_valid_i = 0;
+            end
             if (state_o === 1) second_frame_started = 1;
             if (result_valid_o) valid_count = valid_count + 1;
         end
@@ -351,15 +432,23 @@ module tb_conv_fsm;
             $display("FAIL t=%0t: second frame pulses=%0d expected %0d", $time, valid_count,
                      OUT_TOTAL);
         end
+        if (rd_buf_o !== 1) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: rd_buf not latched to 1 (%0d)", $time, rd_buf_o);
+        end
 
         // Random stimulus
-        // Stress-test with random start requests across several frames.
+        // Stress-test with random start, kernel-write, and buffer-select
+        // toggles across several frames.
         for (i = 0; i < NUM_TESTS; i = i + 1) begin
             @(negedge clk_i);
             start_i = $urandom & 1;
+            kernel_wr_valid_i = $urandom & 1;
+            buf_sel_i = $urandom & 1;
             kernel_data_i = $urandom;
         end
         start_i = 0;
+        kernel_wr_valid_i = 0;
 
         // Allow the last transaction to settle, then report
         #20;
