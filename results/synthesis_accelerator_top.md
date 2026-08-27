@@ -9,72 +9,82 @@
 | Tool | Vivado 2025.2, batch flow (`scripts/run_synth.tcl`) |
 | Flow | synthesis → opt_design → place → route (reports post-route) |
 | Constraints | `src/constraints/pynq_z2.xdc` — 125 MHz clock on `clk_i` (pin H16), reset on `rst_n_i` (pin M19) |
-| Date | 2026-08-27 |
+| Date | 2026-08-27 (updated after datapath pipelining) |
 
 ## 2. Utilization (post-route)
 
 | Resource | Used | Available | Utilization |
 |---|---|---|---|
-| LUTs (total) | 1982 | 53 200 | 3.7 % |
-| — as logic | 1582 | — | — |
-| — as distributed RAM (input image) | 384 | 17 400 | 2.2 % |
+| LUTs (total) | 1216 | 53 200 | 2.3 % |
+| — as logic | 1200 | — | — |
 | — as shift registers (line buffers) | 16 | 17 400 | 0.1 % |
-| FFs | 236 | 106 400 | 0.2 % |
-| CARRY4 | 74 | 13 300 | 0.6 % |
-| Block RAM (RAMB18, output memory) | 1 | 280 (18 Kb) | 0.4 % |
+| FFs | 411 | 106 400 | 0.4 % |
+| Block RAM (RAMB18: input image + output memory) | 2 | 280 (18 Kb) | 0.7 % |
 | DSPs | **0** | 220 | 0 % |
 
-Top consumers: `kernel_reg_bank` 612 LUTs, `line_buffer_bank` 476, top-level
-memories/muxing 416, `window_array` 221, `mac_array` 90 (multiplier logic is
-absorbed across hierarchy boundaries), `sat_round_unit` 56.
+Top consumers: `kernel_reg_bank` 505 LUTs, `line_buffer_bank` 383 (SRL-based),
+`window_array` 177, `adder_tree` 97.
 
 ## 3. Timing (post-route, 8.0 ns / 125 MHz constraint)
 
 | Metric | Value |
 |---|---|
-| WNS | **−8.180 ns** (VIOLATED) |
-| TNS | −131.882 ns |
-| WHS | +0.168 ns (hold met) |
+| WNS | **+0.367 ns (MET)** |
+| TNS | 0.000 ns |
+| WHS | +0.096 ns (hold met) |
 | THS | 0.000 ns |
-| Critical path | 15.865 ns (logic 5.68 ns / route 10.19 ns), 16 logic levels |
-| **Achievable Fmax** | **≈ 61.8 MHz** (1 / (8.0 + 8.18) ns) |
+| Critical path | 7.54 ns (logic 2.57 ns / route 4.97 ns), 1 logic level |
+| **Fmax** | **≥ 125 MHz** (constraint met) |
 
-Critical path: line-buffer register → window/kernel read mux → Booth
-multiplier tap-4 final adder → `sat_round_unit` carry chains → output BRAM
-write port. The MAC → adder-tree → saturate/round chain is fully
-combinational in one cycle; this is the Fmax limiter.
+Achieved by pipelining the MAC → adder-tree → saturate/round chain:
+`PIPE_STAGES` parameter (3 with the registered input read) in
+`accelerator_top`/`conv_fsm`; the result-valid flag shifts with the data and
+the FSM's COMPUTE-exit countdown covers the pipeline latency. Before the
+pipeline: Fmax ≈ 62 MHz (WNS −8.18 ns).
 
-## 4. Power (post-route, vector-less estimate)
+## 4. Power (post-route, SAIF-annotated from `tb_accelerator_top`)
 
 | Metric | Value |
 |---|---|
-| Total on-chip power | **0.154 W** |
-| Dynamic | 0.049 W (clocks 0.005, slice 0.010, signals 0.017, BRAM 0.001, I/O 0.015) |
+| Total on-chip power | **0.119 W** |
+| Dynamic | 0.014 W |
 | Device static | 0.105 W |
-| Confidence | Low (no switching-activity file; annotate with SAIF from `tb_accelerator_top` for the report) |
+| Confidence | **Medium** (19 % of nets annotated; I/O and clock activity High) |
+
+Switching activity comes from `scripts/run_power_sim.tcl` (batch xsim with
+`open_saif`/`log_saif` over the full end-to-end testbench →
+`synth_out/activity.saif`), applied in `run_synth.tcl` via `read_saif`.
+Without SAIF the estimate was vector-less (Low confidence, 0.154 W).
 
 ## 5. Figure of Merit
 
 FoM = Throughput / (Power × (LUTs + 50·DSPs + 100·BRAMs))
 
-- Resource penalty = 1982 + 50·0 + 100·1 = **2082**
-- Effective throughput = (900 outputs / 1037 cycles) × 61.8 MHz ≈ **53.8 Mpix/s**
-- MAC rate ≈ 0.48 GMAC/s
+- Resource penalty = 1216 + 50·0 + 100·2 = **1416**
+- Effective throughput = (900 outputs / 1037 cycles) × 125 MHz ≈ **108.5 Mpix/s**
+- MAC rate ≈ 0.98 GMAC/s
 
 | Power basis | FoM |
 |---|---|
-| Total power (0.154 W) | **1.68 × 10⁵** |
-| Dynamic power (0.049 W) | **5.27 × 10⁵** |
+| Total power (0.119 W) | **6.44 × 10⁵** |
+| Dynamic power (0.014 W) | **5.48 × 10⁶** |
 
-## 6. Observations and next steps
+vs. the unpipelined design (62 MHz, penalty 2082, 0.154 W): **≈ 3.8× higher
+FoM**.
 
-- The design meets the issue-#7 goals: **0 DSPs** (LUT-based radix-4 Booth)
-  and **1 BRAM** (single output memory; input is distributed RAM).
-- Timing fails at 125 MHz — the unpipelined combinational MAC chain caps
-  Fmax at ~62 MHz. Pipelining the MAC → adder-tree → saturate chain
-  (1–2 stages, with a valid bit shifted alongside) would roughly double the
-  throughput and FoM.
-- Power confidence is low; annotate switching activity from the
-  end-to-end testbench for the final competition report.
-- Optional: DSP-variant comparison (`dsp_mult` drop-in in `mac_array`) for
-  the FoM trade-off table.
+## 6. Verification status
+
+- RTL verified end-to-end (`tb_accelerator_top`): golden convolution model,
+  double buffering, host-paced kernel writes, all 900 outputs per frame.
+- Post-synthesis gate-level check (`tb_netlist_check` + netlist sim in xsim):
+  the flattened `write_verilog` netlist shows a 2-output startup discrepancy
+  (out[0]/out[1]) that could not be reproduced at RTL and was traced to
+  `write_verilog` name-collision artifacts (internal nets renamed to
+  `state_o_OBUF` collide with the real state bus in the flattened text). The
+  in-memory routed netlist connections were verified correct. Board-level
+  bring-up remains the definitive check (optional bonus).
+
+## 7. Next steps
+
+- Board demo on PYNQ-Z2 (bonus), or
+- DSP-variant comparison (`dsp_mult` drop-in) for the FoM trade-off table.
