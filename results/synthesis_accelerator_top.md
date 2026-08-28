@@ -86,5 +86,4 @@ FoM**.
 
 ## 7. Next steps
 
-- Board demo on PYNQ-Z2 (bonus), or
-- DSP-variant comparison (`dsp_mult` drop-in) for the FoM trade-off table.
+- Board demo on PYNQ-Z2 (bonus)
