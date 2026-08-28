@@ -28,6 +28,7 @@ module conv_fsm #(
     parameter IMAGE_WIDTH = 32,  // Input feature-map width
     parameter IMAGE_HEIGHT = 32,  // Input feature-map height
     parameter COEFF_WIDTH = 8,  // Kernel coefficient width
+    parameter PIPE_STAGES = 0,  // Datapath pipeline delay (stages after the window)
     parameter PIX_ADDR_WIDTH = $clog2(IMAGE_WIDTH * IMAGE_HEIGHT),
     parameter STATE_WIDTH = 3  // State encoding width
 ) (
@@ -72,9 +73,9 @@ module conv_fsm #(
     // Kernel load index (next)
     reg [$clog2(N*N)-1:0] load_cnt_d;
     // Compute-exit countdown (current)
-    reg [1:0] exit_cnt_q;
+    reg [$clog2(PIPE_STAGES+3)-1:0] exit_cnt_q;
     // Compute-exit countdown (next)
-    reg [1:0] exit_cnt_d;
+    reg [$clog2(PIPE_STAGES+3)-1:0] exit_cnt_d;
     // Result valid (current, pipeline aligned)
     reg result_valid_q;
     // Result valid (next)
@@ -111,11 +112,13 @@ module conv_fsm #(
             S_FILL: begin
                 if (pix_addr_i >= FILL_CYCLES-1) state_d = S_COMPUTE;
             end
-            // Shift the stream and produce one output pixel per cycle
+            // Shift the stream and produce one output pixel per cycle.
+            // The exit countdown covers the pipelined result latency so the
+            // last output write lands before the DONE handoff.
             S_COMPUTE: begin
                 result_valid_d = block_valid;
                 if (pix_last_i) begin
-                    exit_cnt_d = 2;
+                    exit_cnt_d = PIPE_STAGES + 2;
                 end else if (exit_cnt_q > 0) begin
                     exit_cnt_d = exit_cnt_q - 1;
                     if (exit_cnt_q == 1) state_d = S_DONE;

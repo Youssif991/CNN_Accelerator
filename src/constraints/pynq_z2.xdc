@@ -3,14 +3,14 @@
 
 ### Clock
 ## Clock signal (125 MHz reference clock)
-set_property -dict { PACKAGE_PIN H16 IOSTANDARD LVCMOS33 } [get_ports { clk_in1}];
-create_clock -add -name sys_clk_pin -period 8.00 -waveform {0 4} [get_ports { clk_in1 }];
+set_property -dict { PACKAGE_PIN H16 IOSTANDARD LVCMOS33 } [get_ports { clk_i}];
+create_clock -add -name sys_clk_pin -period 8.00 -waveform {0 4} [get_ports { clk_i }];
 
 
 
 ### Switches
 #set_property -dict {PACKAGE_PIN M20 IOSTANDARD LVCMOS33} [get_ports {switch_input[0]}]
-set_property -dict {PACKAGE_PIN M19 IOSTANDARD LVCMOS33} [get_ports {reset}]
+set_property -dict {PACKAGE_PIN M19 IOSTANDARD LVCMOS33} [get_ports {rst_n_i}]
 
 ### Audio
 #set_property -dict {PACKAGE_PIN U9 IOSTANDARD LVCMOS33} [get_ports IIC_1_scl_io]
