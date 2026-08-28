@@ -41,6 +41,11 @@ report_timing -max_paths 5 -file $out_dir/timing_worst.rpt
 if {[file exists synth_out/activity.saif]} {
     puts "--> Annotating switching activity (synth_out/activity.saif)"
     read_saif synth_out/activity.saif -strip_path tb_accelerator_top/dut
+    # The RTL-scope SAIF cannot map this post-optimization net name; shift_valid
+    # (state_o_OBUF[1]) is high during FILL+COMPUTE (~99% of a frame) and
+    # toggles twice per frame, so replace the vector-less default (0/0).
+    set_switching_activity -toggle_rate 0.002 -static_probability 0.99 \
+        [get_nets u_fsm/state_o_OBUF[1]]
 }
 report_power -file $out_dir/power.rpt
 report_clock_utilization -file $out_dir/clock_util.rpt
