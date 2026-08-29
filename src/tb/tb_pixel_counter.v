@@ -3,16 +3,17 @@
 // Engineer: Youssef
 //
 // Create Date: 08/27/2026
-// Design Name: CNN Convolution Control - Input Address Generator Testbench
-// Module Name: tb_addr_gen_in
+// Design Name: CNN Convolution Control - Pixel Position Counter Testbench
+// Module Name: tb_pixel_counter
 // Tool Versions: Vivado 2025.2
-// Description: Self-checking testbench for the input address generator. A
-//              golden reference models the row-major counter (independent
-//              register mirror); the checker compares addr_o and last_o on
-//              negedge. Covers reset, count, hold, restart, the full-frame
-//              wrap, and randomized enable/restart stimulus.
+// Description: Self-checking testbench for the pixel position counter (the
+//              former input address generator). A golden reference models
+//              the row-major counter (independent register mirror); the
+//              checker compares addr_o and last_o on negedge. Covers reset,
+//              count, hold, restart, the full-frame wrap, and randomized
+//              enable/restart stimulus.
 //
-// Dependencies: addr_gen_in (src/control/addr_gen_in.v)
+// Dependencies: pixel_counter (src/control/pixel_counter.v)
 //
 // Revision:
 // Revision 0.01 - File Created
@@ -20,7 +21,7 @@
 //
 //////////////////////////////////////////////////////////////////////////////////
 
-module tb_addr_gen_in;
+module tb_pixel_counter;
 
     // Parameters
     localparam IMAGE_WIDTH = 32;
@@ -43,7 +44,7 @@ module tb_addr_gen_in;
     reg seen_last;
 
     // Module instantiation
-    addr_gen_in #(
+    pixel_counter #(
         .IMAGE_WIDTH (IMAGE_WIDTH),
         .IMAGE_HEIGHT(IMAGE_HEIGHT),
         .ADDR_WIDTH  (ADDR_WIDTH)
@@ -173,8 +174,8 @@ module tb_addr_gen_in;
 
     // VCD dump for waveform debugging
     initial begin
-        $dumpfile("tb_addr_gen_in.vcd");
-        $dumpvars(0, tb_addr_gen_in);
+        $dumpfile("tb_pixel_counter.vcd");
+        $dumpvars(0, tb_pixel_counter);
     end
 
 endmodule

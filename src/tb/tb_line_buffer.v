@@ -9,8 +9,8 @@
 // Description: Self-checking testbench for the one-row line buffer. A golden
 //              reference models the shift register on posedge clk; the
 //              checker compares pixel_out_o against it on negedge clk.
-//              Covers reset, a full-row ramp delay, hold, and randomized
-//              stimulus.
+//              Covers a reset-free prime, a full-row ramp delay, hold, and
+//              randomized stimulus.
 //
 // Dependencies: line_buffer (src/datapath/line_buffer.v)
 //
@@ -64,7 +64,6 @@ module tb_line_buffer;
         .PIXEL_WIDTH(PIXEL_WIDTH)
     ) dut (
         .clk_i(clk_i),
-        .rst_n_i(rst_n_i),
         .shift_valid_i(shift_valid_i),
         .pixel_in_i(pixel_in_i),
         .pixel_out_o(pixel_out_o)
@@ -93,7 +92,17 @@ module tb_line_buffer;
         shift_valid_i = 0;
         pixel_in_i = 0;
 
+        // The buffer has no reset: shift in a full row of zeros while reset
+        // is still asserted (the checker is gated off) so the initial buffer
+        // contents are known before the directed tests start.
+        for (i = 0; i < IMAGE_WIDTH; i = i + 1) begin
+            @(negedge clk_i);
+            shift_valid_i = 1;
+            pixel_in_i = 0;
+        end
         @(negedge clk_i);
+        shift_valid_i = 0;
+
         rst_n_i = 1;  // release reset
 
         // Directed test 1: full-row delay with a ramp

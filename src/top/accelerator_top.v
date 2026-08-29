@@ -8,19 +8,21 @@
 // Tool Versions: Vivado 2025.2
 // Description: Top level integrating the convolution datapath (line-buffer
 //              bank, window array, MAC array, adder tree, saturate/round),
-//              the frame controller, and the address generators with the
-//              input and output feature-map memories. The host loads the
-//              kernel (host-paced, one coefficient per valid pulse) and the
-//              input image (2x double-buffered distributed RAM with a
-//              registered read matching the block-RAM inference), then
-//              pulses start_i; the accelerator streams one output pixel per
-//              cycle and the host reads the results back through the output
-//              block-RAM read port. The MAC-to-result chain is pipelined
-//              (PIPE_STAGES register stages) to raise Fmax; the result-valid
-//              flag shifts with the data.
+//              the frame controller, and the output address generator with
+//              the output feature-map memory. The host loads the kernel
+//              (host-paced, one coefficient per valid pulse), then pulses
+//              start_i; the input image streams in one 8-bit pixel per cycle
+//              (pixel_in_i / pixel_valid_i) and the accelerator produces one
+//              output pixel per cycle (result_o / result_valid_o). A
+//              deasserted pixel_valid_i stalls the stream: the counters and
+//              the sliding window hold, so the pipeline stays synchronized.
+//              Results are also written to the output block RAM for host
+//              readback. The MAC-to-result chain is pipelined (PIPE_STAGES
+//              register stages) to raise Fmax; the result-valid flag shifts
+//              with the data.
 //
 // Dependencies: conv_fsm (src/control/conv_fsm.v)
-//               addr_gen_in (src/control/addr_gen_in.v)
+//               pixel_counter (src/control/pixel_counter.v)
 //               addr_gen_out (src/control/addr_gen_out.v)
 //               line_buffer_bank (src/datapath/line_buffer_bank.v)
 //               window_array (src/datapath/window_array.v)
@@ -43,7 +45,7 @@ module accelerator_top #(
     parameter COEFF_WIDTH = 8,  // Kernel coefficient width (signed)
     parameter OUT_WIDTH = 16,  // Output pixel width (signed)
     parameter ROUND_ENABLE = 1,  // Round-half-up before truncation
-    parameter PIPE_STAGES = 3,  // Pipeline stages after the window array
+    parameter PIPE_STAGES = 2,  // Pipeline stages after the window array
     parameter PIX_ADDR_WIDTH = $clog2(IMAGE_WIDTH * IMAGE_HEIGHT),
     parameter OUT_IMAGE_WIDTH = IMAGE_WIDTH - N + 1,
     parameter OUT_IMAGE_HEIGHT = IMAGE_HEIGHT - N + 1,
@@ -53,21 +55,20 @@ module accelerator_top #(
 ) (
     input wire clk_i,
     input wire rst_n_i,
-    input wire start_i,  // Frame start pulse (1 cycle)
-    input wire buf_sel_i,  // Input buffer to convolve (latched at frame start)
+    input wire start_i,  // Frame start pulse
+    input wire [PIXEL_WIDTH-1:0] pixel_in_i,  // Streaming input pixel data
+    input wire pixel_valid_i,  // Pixel valid (deasserted = stall)
     input wire kernel_wr_valid_i,  // Kernel coefficient write valid (host-paced)
     input wire [COEFF_WIDTH-1:0] kernel_wr_data_i,  // Kernel coefficient data
-    input wire img_wr_valid_i,  // Input image write valid
-    input wire [PIX_ADDR_WIDTH:0] img_wr_addr_i,  // Input write address {buf, pixel}
-    input wire [PIXEL_WIDTH-1:0] img_wr_data_i,  // Input pixel data
     input wire [OUT_ADDR_WIDTH-1:0] res_rd_addr_i,  // Output read address
     output wire busy_o,  // Frame in progress
     output wire done_o,  // Frame complete
     output wire [2:0] state_o,  // FSM state (observability)
-    output wire [OUT_WIDTH-1:0] res_rd_data_o  // Output read data
+    output wire [OUT_WIDTH-1:0] res_rd_data_o,  // Output read data
+    output wire result_valid_o,  // Output pixel valid (pipeline aligned)
+    output wire [OUT_WIDTH-1:0] result_o  // Output pixel data (pipeline aligned)
 );
 
-    localparam TOTAL_PIXELS = IMAGE_WIDTH * IMAGE_HEIGHT;
     localparam OUT_TOTAL = OUT_IMAGE_WIDTH * OUT_IMAGE_HEIGHT;
 
     // Control-unit interconnect
@@ -77,10 +78,8 @@ module accelerator_top #(
     wire kernel_we;
     wire [$clog2(N*N)-1:0] kernel_addr;
     wire shift_valid;
-    wire mem_rd_en;
     wire result_valid;
     wire rst_count;
-    wire rd_buf;
 
     // Datapath interconnect
     wire [N*PIXEL_WIDTH-1:0] row_streams;
@@ -90,12 +89,13 @@ module accelerator_top #(
     wire [N*N*PROD_WIDTH-1:0] products;
     wire signed [SUM_WIDTH-1:0] conv_sum;
     wire signed [OUT_WIDTH-1:0] result;
-    wire [PIXEL_WIDTH-1:0] img_rd_data;
 
     // Pipeline interconnect (registers between the combinational blocks)
     wire [N*N*PROD_WIDTH-1:0] products_to_tree;
     wire signed [SUM_WIDTH-1:0] sum_to_sat;
     wire result_valid_p;  // result valid shifted with the pipeline data
+    wire col_valid;  // current pixel is in an in-image output column (>= N-1)
+    wire col_valid_p;  // col_valid shifted with the pipeline data
 
     // Pipeline stage 1: register the MAC products
     generate
@@ -146,31 +146,42 @@ module accelerator_top #(
         end
     endgenerate
 
-    // Input image storage: 2x double-buffered distributed RAM. The read is
-    // explicitly registered (models the block-RAM read latency) so the RTL
-    // matches the synthesized memory exactly; the read adds one stage to the
-    // datapath pipeline (PIPE_STAGES includes it).
-    reg [PIXEL_WIDTH-1:0] img_mem [0:2*TOTAL_PIXELS-1];
+    // Column-valid flag
+    assign col_valid = (pix_addr % IMAGE_WIDTH) >= (N-1);
 
-    always @(posedge clk_i) begin : img_write
-        if (img_wr_valid_i) img_mem[img_wr_addr_i] <= img_wr_data_i;
+    // Register col_valid
+    reg col_valid_q;
+    always @(posedge clk_i or negedge rst_n_i) begin : col_valid_reg
+        if (!rst_n_i) col_valid_q <= 1'b0;
+        else col_valid_q <= col_valid;
     end
 
-    reg [PIXEL_WIDTH-1:0] img_rd_q;
-
-    always @(posedge clk_i or negedge rst_n_i) begin : img_read
-        if (!rst_n_i) img_rd_q <= 0;
-        else img_rd_q <= img_mem[{rd_buf, pix_addr}];
-    end
-
-    assign img_rd_data = img_rd_q;
+    generate
+        if (PIPE_STAGES == 1) begin : gen_pipe_col_valid1
+            reg col_valid_p1;
+            always @(posedge clk_i or negedge rst_n_i) begin : stage
+                if (!rst_n_i) col_valid_p1 <= 1'b0;
+                else col_valid_p1 <= col_valid_q;
+            end
+            assign col_valid_p = col_valid_p1;
+        end else if (PIPE_STAGES >= 2) begin : gen_pipe_col_validn
+            reg [PIPE_STAGES-1:0] col_valid_p1;
+            always @(posedge clk_i or negedge rst_n_i) begin : stage
+                if (!rst_n_i) col_valid_p1 <= 0;
+                else col_valid_p1 <= {col_valid_p1[PIPE_STAGES-2:0], col_valid_q};
+            end
+            assign col_valid_p = col_valid_p1[PIPE_STAGES-1];
+        end else begin : gen_no_pipe_col_valid
+            assign col_valid_p = col_valid_q;
+        end
+    endgenerate
 
     // Output storage: 1 block RAM (simple dual-port, registered read)
     reg [OUT_WIDTH-1:0] res_mem [0:OUT_TOTAL-1];
     reg [OUT_WIDTH-1:0] res_rd_data_q;
 
     always @(posedge clk_i) begin : res_write
-        if (result_valid_p) res_mem[out_addr] <= result;
+        if (result_valid_p && col_valid_p) res_mem[out_addr] <= result;
     end
 
     always @(posedge clk_i) begin : res_read
@@ -178,6 +189,10 @@ module accelerator_top #(
     end
 
     assign res_rd_data_o = res_rd_data_q;
+
+    // Streaming output (pipeline-aligned with the result data)
+    assign result_valid_o = result_valid_p;
+    assign result_o       = result;
 
     // Frame controller
     conv_fsm #(
@@ -192,7 +207,7 @@ module accelerator_top #(
         .clk_i           (clk_i),
         .rst_n_i         (rst_n_i),
         .start_i         (start_i),
-        .buf_sel_i       (buf_sel_i),
+        .pixel_valid_i   (pixel_valid_i),
         .kernel_wr_valid_i(kernel_wr_valid_i),
         .kernel_data_i   (kernel_wr_data_i),
         .pix_addr_i      (pix_addr),
@@ -200,17 +215,15 @@ module accelerator_top #(
         .kernel_we_o     (kernel_we),
         .kernel_addr_o   (kernel_addr),
         .shift_valid_o   (shift_valid),
-        .mem_rd_en_o     (mem_rd_en),
         .result_valid_o  (result_valid),
         .rst_count_o     (rst_count),
-        .rd_buf_o        (rd_buf),
         .busy_o          (busy_o),
         .done_o          (done_o),
         .state_o         (state_o)
     );
 
-    // Address generators
-    addr_gen_in #(
+    // Pixel position counter (input) and output address generator
+    pixel_counter #(
         .IMAGE_WIDTH (IMAGE_WIDTH),
         .IMAGE_HEIGHT(IMAGE_HEIGHT),
         .ADDR_WIDTH  (PIX_ADDR_WIDTH)
@@ -230,7 +243,7 @@ module accelerator_top #(
     ) u_out (
         .clk_i       (clk_i),
         .rst_n_i     (rst_n_i),
-        .en_i        (result_valid_p),
+        .en_i        (result_valid_p && col_valid_p),
         .rst_count_i (rst_count),
         .addr_o      (out_addr),
         .last_o      ()
@@ -243,9 +256,8 @@ module accelerator_top #(
         .PIXEL_WIDTH  (PIXEL_WIDTH)
     ) u_line_buffer_bank (
         .clk_i         (clk_i),
-        .rst_n_i       (rst_n_i),
         .shift_valid_i (shift_valid),
-        .pixel_in_i    (img_rd_data),
+        .pixel_in_i    (pixel_in_i),
         .row_streams_o (row_streams)
     );
 
