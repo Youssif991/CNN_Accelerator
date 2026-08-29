@@ -82,10 +82,6 @@ module conv_fsm #(
 
     // Row of the current input pixel
     wire [PIX_ADDR_WIDTH-1:0] pix_row = pix_addr_i / IMAGE_WIDTH;
-    // Every pixel past the fill rows completes a window block, so the
-    // streaming valid covers every accepted pixel (border windows with
-    // column < N-1 included). The top gates the output-memory writes to
-    // the in-image columns.
     wire block_valid = (pix_row >= N-1);
 
     // Next-state

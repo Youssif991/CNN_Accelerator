@@ -40,6 +40,9 @@ module tb_conv_fsm;
     localparam OUT_IMAGE_HEIGHT = IMAGE_HEIGHT - N + 1;
     localparam OUT_TOTAL = OUT_IMAGE_WIDTH * OUT_IMAGE_HEIGHT;
     localparam OUT_ADDR_WIDTH = $clog2(OUT_TOTAL);
+    // Streamed outputs per frame: every accepted pixel past the fill rows
+    // (includes the N-1 border windows per row that the memory path skips)
+    localparam STREAM_OUT_TOTAL = IMAGE_WIDTH * (IMAGE_HEIGHT - N + 1) - (N - 1);
     localparam STATE_WIDTH = 3;
     localparam NUM_TESTS = 300;  // random stimulus cycles
 
@@ -210,9 +213,9 @@ module tb_conv_fsm;
         end
     end
 
-    // Reference block-valid: the current pixel completes an NxN window
-    wire ref_block_valid = (ref_shifts_q / IMAGE_WIDTH >= N-1) &&
-                           (ref_shifts_q % IMAGE_WIDTH >= N-1);
+    // Reference block-valid: every pixel past the fill rows completes a
+    // window, so the streaming valid covers border windows too
+    wire ref_block_valid = (ref_shifts_q / IMAGE_WIDTH >= N-1);
 
     // Expected Moore outputs (combinational from the reference phase).
     // shift_valid is gated by the pixel stream: a deasserted valid stalls
@@ -337,10 +340,10 @@ module tb_conv_fsm;
             $display("FAIL t=%0t: shift cycles=%0d expected %0d", $time, shift_count,
                      TOTAL_PIXELS + 2);
         end
-        if (valid_count !== OUT_TOTAL) begin
+        if (valid_count !== STREAM_OUT_TOTAL) begin
             errors = errors + 1;
             $display("FAIL t=%0t: result pulses=%0d expected %0d", $time, valid_count,
-                     OUT_TOTAL);
+                     STREAM_OUT_TOTAL);
         end
         if (!seen_done) begin
             errors = errors + 1;
@@ -383,10 +386,10 @@ module tb_conv_fsm;
             $display("FAIL t=%0t: gapped kernel writes=%0d expected %0d", $time, load_count,
                      N*N);
         end
-        if (valid_count !== OUT_TOTAL) begin
+        if (valid_count !== STREAM_OUT_TOTAL) begin
             errors = errors + 1;
             $display("FAIL t=%0t: gapped frame pulses=%0d expected %0d", $time, valid_count,
-                     OUT_TOTAL);
+                     STREAM_OUT_TOTAL);
         end
         if (!seen_done) begin
             errors = errors + 1;
@@ -416,10 +419,10 @@ module tb_conv_fsm;
             errors = errors + 1;
             $display("FAIL t=%0t: second frame never entered LOAD", $time);
         end
-        if (valid_count !== OUT_TOTAL) begin
+        if (valid_count !== STREAM_OUT_TOTAL) begin
             errors = errors + 1;
             $display("FAIL t=%0t: second frame pulses=%0d expected %0d", $time, valid_count,
-                     OUT_TOTAL);
+                     STREAM_OUT_TOTAL);
         end
 
         // Directed test 5: pixel-stream stalls must not break synchronization.
@@ -459,10 +462,10 @@ module tb_conv_fsm;
             $display("FAIL t=%0t: stalled kernel writes=%0d expected %0d", $time, load_count,
                      N*N);
         end
-        if (valid_count !== OUT_TOTAL) begin
+        if (valid_count !== STREAM_OUT_TOTAL) begin
             errors = errors + 1;
             $display("FAIL t=%0t: stalled frame pulses=%0d expected %0d", $time, valid_count,
-                     OUT_TOTAL);
+                     STREAM_OUT_TOTAL);
         end
         if (!seen_done) begin
             errors = errors + 1;

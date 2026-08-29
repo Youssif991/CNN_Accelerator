@@ -35,12 +35,16 @@ module tb_accelerator_top;
     localparam PIXEL_WIDTH = 8;
     localparam COEFF_WIDTH = 8;
     localparam OUT_WIDTH = 16;
+    localparam PIPE_STAGES = 2;  // must match the accelerator top default
     localparam TOTAL_PIXELS = IMAGE_WIDTH * IMAGE_HEIGHT;
     localparam PIX_ADDR_WIDTH = $clog2(TOTAL_PIXELS);
     localparam OUT_IMAGE_WIDTH = IMAGE_WIDTH - N + 1;
     localparam OUT_IMAGE_HEIGHT = IMAGE_HEIGHT - N + 1;
     localparam OUT_TOTAL = OUT_IMAGE_WIDTH * OUT_IMAGE_HEIGHT;
     localparam OUT_ADDR_WIDTH = $clog2(OUT_TOTAL);
+    // Streamed outputs per frame: every accepted pixel past the fill rows
+    // (includes the N-1 border windows per row that the memory check skips)
+    localparam STREAM_OUT_TOTAL = IMAGE_WIDTH * (IMAGE_HEIGHT - N + 1) - (N - 1);
     localparam PROD_WIDTH = PIXEL_WIDTH + COEFF_WIDTH + 2;
     localparam SUM_WIDTH = PROD_WIDTH + $clog2(N * N);
     localparam BITS_DROPPED = SUM_WIDTH - OUT_WIDTH;
@@ -78,7 +82,7 @@ module tb_accelerator_top;
     reg signed [OUT_WIDTH-1:0] ref_out;
 
     // Captured streaming output (indexed by result_valid_o pulses)
-    reg signed [OUT_WIDTH-1:0] stream_out[0:OUT_TOTAL-1];
+    reg signed [OUT_WIDTH-1:0] stream_out[0:1023];
 
     // Module instantiation (defaults: streaming input, PIPE_STAGES=2)
     accelerator_top #(
@@ -87,7 +91,8 @@ module tb_accelerator_top;
         .IMAGE_HEIGHT(IMAGE_HEIGHT),
         .PIXEL_WIDTH (PIXEL_WIDTH),
         .COEFF_WIDTH (COEFF_WIDTH),
-        .OUT_WIDTH   (OUT_WIDTH)
+        .OUT_WIDTH   (OUT_WIDTH),
+        .PIPE_STAGES (PIPE_STAGES)
     ) dut (
         .clk_i            (clk_i),
         .rst_n_i          (rst_n_i),
@@ -187,10 +192,43 @@ module tb_accelerator_top;
         end
     endtask
 
+    // Task: check the streaming port against the flat-window golden. The
+    // streaming valid covers every accepted pixel past the fill, so output a
+    // is the convolution of the window = the last 3 pixels of each of the 3
+    // row streams: cell (i,j) = stream[a + i*W + j]. Border windows (column
+    // < N-1) naturally read the previous row's tail, exactly like the shift
+    // register does.
+    task check_stream;
+        integer a;  // streamed output index
+        integer t;  // kernel tap
+        begin
+            for (a = 0; a < STREAM_OUT_TOTAL; a = a + 1) begin
+                ref_sum = 0;
+                for (t = 0; t < N * N; t = t + 1) begin
+                    ref_sum = ref_sum + $signed(
+                        {1'b0, ref_img[a + (t / N) * IMAGE_WIDTH + t % N]}) * ref_kernel[t];
+                end
+                ref_shifted = ref_sum + (1 << (BITS_DROPPED - 1));
+                ref_shifted = ref_shifted >>> BITS_DROPPED;
+                if (ref_shifted > SAT_MAX) begin
+                    ref_out = SAT_MAX;
+                end else if (ref_shifted < SAT_MIN) begin
+                    ref_out = SAT_MIN;
+                end else begin
+                    ref_out = $signed(ref_shifted[OUT_WIDTH-1:0]);
+                end
+                if (stream_out[a] !== ref_out) begin
+                    errors = errors + 1;
+                    $display("FAIL t=%0t: stream_out[%0d] = %0d expected %0d", $time, a,
+                             stream_out[a], ref_out);
+                end
+            end
+        end
+    endtask
+
     // Task: read back all outputs of one frame and compare with the golden
-    // triple-loop convolution model. Checks both the memory readback and the
-    // captured streaming port.
-    task check_outputs;
+    // triple-loop convolution model (in-image outputs only).
+    task check_memory;
         integer a;  // output address
         integer r;  // output row
         integer c;  // output col
@@ -211,12 +249,6 @@ module tb_accelerator_top;
                     ref_out = SAT_MIN;
                 end else begin
                     ref_out = $signed(ref_shifted[OUT_WIDTH-1:0]);
-                end
-                // Streaming port check
-                if (stream_out[a] !== ref_out) begin
-                    errors = errors + 1;
-                    $display("FAIL t=%0t: stream_out[%0d] = %0d expected %0d", $time, a,
-                             stream_out[a], ref_out);
                 end
                 // Memory readback check
                 @(negedge clk_i);
@@ -255,11 +287,12 @@ module tb_accelerator_top;
         stream_image(0);  // no stalls
         wait_done();
         #20;  // settle so the final output writes land before readback
-        check_outputs();
-        if (stream_idx !== OUT_TOTAL) begin
+        check_stream();
+        check_memory();
+        if (stream_idx !== STREAM_OUT_TOTAL) begin
             errors = errors + 1;
             $display("FAIL t=%0t: result_valid_o pulses=%0d expected %0d", $time, stream_idx,
-                     OUT_TOTAL);
+                     STREAM_OUT_TOTAL);
         end
 
         // Directed test 2: random kernel and image, continuous stream
@@ -270,11 +303,12 @@ module tb_accelerator_top;
         stream_image(0);
         wait_done();
         #20;
-        check_outputs();
-        if (stream_idx !== OUT_TOTAL) begin
+        check_stream();
+        check_memory();
+        if (stream_idx !== STREAM_OUT_TOTAL) begin
             errors = errors + 1;
             $display("FAIL t=%0t: result_valid_o pulses=%0d expected %0d", $time, stream_idx,
-                     OUT_TOTAL);
+                     STREAM_OUT_TOTAL);
         end
 
         // Directed test 3: random kernel and image with pixel-stream stalls.
@@ -287,11 +321,12 @@ module tb_accelerator_top;
         stream_image(32);  // stalls every 32 pixels
         wait_done();
         #20;
-        check_outputs();
-        if (stream_idx !== OUT_TOTAL) begin
+        check_stream();
+        check_memory();
+        if (stream_idx !== STREAM_OUT_TOTAL) begin
             errors = errors + 1;
             $display("FAIL t=%0t: stalled result_valid_o pulses=%0d expected %0d", $time,
-                     stream_idx, OUT_TOTAL);
+                     stream_idx, STREAM_OUT_TOTAL);
         end
 
         // Random stimulus
@@ -305,11 +340,12 @@ module tb_accelerator_top;
             stream_image(f ? 16 : 64);  // different stall cadences
             wait_done();
             #20;
-            check_outputs();
-            if (stream_idx !== OUT_TOTAL) begin
+            check_stream();
+            check_memory();
+            if (stream_idx !== STREAM_OUT_TOTAL) begin
                 errors = errors + 1;
                 $display("FAIL t=%0t: result_valid_o pulses=%0d expected %0d", $time,
-                         stream_idx, OUT_TOTAL);
+                         stream_idx, STREAM_OUT_TOTAL);
             end
         end
 
@@ -320,6 +356,39 @@ module tb_accelerator_top;
         else $display(" TEST FAILED — %0d mismatches found", errors);
 
         $finish;
+    end
+
+    // Bonus check: in a sustained stream (pixel_valid high every cycle) the
+    // output valid must never deassert for two or more consecutive cycles
+    // inside COMPUTE, after the initial pipeline fill. The check arms only
+    // once the input has been continuously valid for PIPE_STAGES+1 cycles,
+    // so the pipeline-fill latency at frame start and after a stall
+    // (allowed initial/recovery latency) is not counted.
+    always @(posedge clk_i) begin : gap_check
+        reg [3:0] low_cnt;
+        reg [3:0] valid_streak;
+        reg seen_valid;
+        if (!rst_n_i) begin
+            low_cnt = 0;
+            valid_streak = 0;
+            seen_valid = 0;
+        end else begin
+            if (state_o == 2) seen_valid = 0;  // re-arm at each frame fill
+            if (result_valid_o) seen_valid = 1;
+            if (pixel_valid_i) valid_streak = valid_streak + 1;
+            else valid_streak = 0;
+            if (seen_valid && (state_o == 3) && pixel_valid_i && !result_valid_o &&
+                (valid_streak > PIPE_STAGES + 1)) begin
+                low_cnt = low_cnt + 1;
+                if (low_cnt >= 2) begin
+                    errors = errors + 1;
+                    $display("FAIL t=%0t: result_valid_o deasserted %0d cycles mid-stream",
+                             $time, low_cnt);
+                end
+            end else begin
+                low_cnt = 0;
+            end
+        end
     end
 
     // Live monitor: prints signal values on every change

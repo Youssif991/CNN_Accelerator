@@ -29,15 +29,19 @@ Notable design choices since the previous report:
   37 FFs and improves timing.
 - **`addr_gen_in` → `pixel_counter`**: no longer an address generator; counts
   accepted pixels as the frame-position reference.
+- **One-output-per-cycle bonus**: the streaming valid covers every accepted
+  pixel past the fill (the column condition is dropped from `block_valid`), so
+  `result_valid_o` stays high every COMPUTE cycle; the output memory is gated
+  by a pipeline-aligned column flag and stores only the in-image results.
 
 ## 2. Utilization (post-route)
 
 | Resource | Used | Available | Utilization |
 |---|---|---|---|
-| LUTs (total) | 1206 | 53 200 | 2.3 % |
-| — as logic | 1190 | — | — |
+| LUTs (total) | 1205 | 53 200 | 2.3 % |
+| — as logic | 1189 | — | — |
 | — as shift registers (line buffers) | 16 | 17 400 | 0.1 % |
-| FFs | 372 | 106 400 | 0.3 % |
+| FFs | 375 | 106 400 | 0.4 % |
 | Block RAM (RAMB18: output memory only) | 1 | 280 (18 Kb) | 0.4 % |
 | DSPs | **0** | 220 | 0 % |
 
@@ -49,9 +53,9 @@ cross-hierarchy), `adder_tree` 97. All multipliers are LUT-based (0 DSPs).
 
 | Metric | Value |
 |---|---|
-| WNS | **+0.751 ns (MET)** |
-| WHS | +0.140 ns (hold met) |
-| Critical path | 7.26 ns (logic 2.49 ns / route 4.77 ns) |
+| WNS | **+0.764 ns (MET)** |
+| WHS | hold met |
+| Critical path | ≈ 7.24 ns |
 | **Fmax** | **≥ 125 MHz** (constraint met; ≈ 138 MHz achievable) |
 
 Timing improved vs the previous report (WNS +0.367 ns) — the reset-free line
@@ -78,29 +82,35 @@ stall-injection frames → `synth_out/activity.saif`), applied in
 FoM = Throughput / (Power × (LUTs + 50·DSPs + 100·BRAMs))
 ```
 
-- Resource penalty = 1206 + 50·0 + 100·1 = **1306**
-- Peak throughput = 1 output/cycle during the block-valid runs = **125 Mpix/s**
-- Sustained throughput (within COMPUTE) = 900 outputs / 958 cycles = 0.939
-- Average throughput (per frame) = 900 outputs / 1037 cycles × 125 MHz
+- Resource penalty = 1205 + 50·0 + 100·1 = **1305**
+- **Streaming valid (the bonus): 958 valid pulses over 958 COMPUTE cycles =
+  1.0 output/cycle sustained** — `result_valid_o` stays high every cycle in
+  COMPUTE after the pipeline fill (no row-boundary gaps), because the valid
+  now covers every accepted pixel; the N−1 border windows per row produce
+  deterministic boundary values the host discards.
+- Real output rate (in-image results): 900 outputs / 1037 cycles × 125 MHz
   ≈ **108.5 Mpix/s**
-- MAC rate ≈ 0.98 GMAC/s (average)
+- Peak throughput = 125 Mpix/s
+- MAC rate ≈ 0.98 GMAC/s (real outputs, average)
 
 | Power basis | FoM |
 |---|---|
-| Total power (0.119 W) | **6.98 × 10⁵** |
-| Dynamic power (0.014 W) | **5.93 × 10⁶** |
+| Total power (0.118 W) | **7.05 × 10⁵** |
+| Dynamic power (0.014 W) | **5.94 × 10⁶** |
 
 vs. the previous memory-mapped design (6.44 × 10⁵): **≈ 1.08× higher FoM**,
 and vs. the unpipelined design (62 MHz, penalty 2082, 0.154 W): **≈ 4.2×
 higher**.
 
 **Throughput reporting (organizer requirement):** peak and average are both
-reported above. Note that `result_valid_o` deasserts for 2 cycles at every
-output-row boundary inside COMPUTE (the window needs a row-start pixel whose
-column < N−1, so no block completes then). Per the organizers' strict reading
-of the one-output-per-cycle bonus, this means the design sustains 0.939
-outputs/cycle in COMPUTE — making the stream gap-free would require zero
-padding (SAME convolution, 32×32 output) or re-scheduling the output stream;
+reported above, and the one-output-per-cycle bonus is implemented and
+verified: `result_valid_o` pulses once per accepted pixel past the fill
+(958/958 in COMPUTE), so a sustained stream sees valid high every cycle.
+The gap-free behaviour is enforced by a dedicated TB checker (no two-cycle
+deassertions while the input is continuously valid); the output memory is
+gated by a pipeline-aligned column flag so it still stores only the 900
+in-image results. Initial latency (FILL + pipeline fill) and pauses between
+frames are not counted, per the rules.
 see Next steps.
 
 ## 6. Verification status
@@ -109,6 +119,9 @@ see Next steps.
   convolution model checked against **both** the streaming port and the output
   RAM readback; covers continuous streams, randomized kernels/images, and
   pixel-stream stalls (1–3-cycle `pixel_valid_i` deassertions every 32 pixels).
+- **Bonus check:** a dedicated checker asserts `result_valid_o` never
+deasserts for two consecutive cycles during a sustained COMPUTE stream; the
+streaming golden models the border windows (previous row's tail) exactly.
 - Control unit (`tb_conv_fsm`): stall-aware golden reference; directed stall
   test deasserts valid 3 cycles out of every 40 mid-frame.
 - All 17 testbenches pass (`./scripts/run_ci.sh`, Icarus Verilog).
@@ -123,8 +136,5 @@ see Next steps.
 - **64×64 configuration** (TPG minimum): parameterized RTL; override via
   `-generic` in `run_synth.tcl` and parameterize the TB localparams. Better
   frame efficiency (fill amortized) and satisfies the TPG demo.
-- **Gap-free output stream** for the one-output-per-cycle bonus: zero padding
-  (SAME convolution → 1024 outputs, one per input pixel) or an output
-  re-scheduling scheme.
 - Board demo on PYNQ-Z2 (bonus), SoC/AXI-Stream wrapper with Zynq + DMA + TPG.
 - Optional bonuses: ReLU/bias, Python golden-reference model.

@@ -146,15 +146,10 @@ module accelerator_top #(
         end
     endgenerate
 
-    // Column-valid flag: shifted with the pipeline like result_valid, so the
-    // output-memory writes capture only the in-image columns. The streaming
-    // result_valid_o covers every streamed pixel (border windows included),
-    // which is what keeps the one-output-per-cycle stream gap-free.
+    // Column-valid flag
     assign col_valid = (pix_addr % IMAGE_WIDTH) >= (N-1);
 
-    // Register col_valid one extra cycle so the delayed flag matches
-    // result_valid_p, which already includes the FSM's registered
-    // block_valid before the PIPE_STAGES pipeline shifts.
+    // Register col_valid
     reg col_valid_q;
     always @(posedge clk_i or negedge rst_n_i) begin : col_valid_reg
         if (!rst_n_i) col_valid_q <= 1'b0;
