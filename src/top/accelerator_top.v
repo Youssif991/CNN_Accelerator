@@ -94,6 +94,8 @@ module accelerator_top #(
     wire [N*N*PROD_WIDTH-1:0] products_to_tree;
     wire signed [SUM_WIDTH-1:0] sum_to_sat;
     wire result_valid_p;  // result valid shifted with the pipeline data
+    wire col_valid;  // current pixel is in an in-image output column (>= N-1)
+    wire col_valid_p;  // col_valid shifted with the pipeline data
 
     // Pipeline stage 1: register the MAC products
     generate
@@ -144,12 +146,47 @@ module accelerator_top #(
         end
     endgenerate
 
+    // Column-valid flag: shifted with the pipeline like result_valid, so the
+    // output-memory writes capture only the in-image columns. The streaming
+    // result_valid_o covers every streamed pixel (border windows included),
+    // which is what keeps the one-output-per-cycle stream gap-free.
+    assign col_valid = (pix_addr % IMAGE_WIDTH) >= (N-1);
+
+    // Register col_valid one extra cycle so the delayed flag matches
+    // result_valid_p, which already includes the FSM's registered
+    // block_valid before the PIPE_STAGES pipeline shifts.
+    reg col_valid_q;
+    always @(posedge clk_i or negedge rst_n_i) begin : col_valid_reg
+        if (!rst_n_i) col_valid_q <= 1'b0;
+        else col_valid_q <= col_valid;
+    end
+
+    generate
+        if (PIPE_STAGES == 1) begin : gen_pipe_col_valid1
+            reg col_valid_p1;
+            always @(posedge clk_i or negedge rst_n_i) begin : stage
+                if (!rst_n_i) col_valid_p1 <= 1'b0;
+                else col_valid_p1 <= col_valid_q;
+            end
+            assign col_valid_p = col_valid_p1;
+        end else if (PIPE_STAGES >= 2) begin : gen_pipe_col_validn
+            reg [PIPE_STAGES-1:0] col_valid_p1;
+            always @(posedge clk_i or negedge rst_n_i) begin : stage
+                if (!rst_n_i) col_valid_p1 <= 0;
+                else col_valid_p1 <= {col_valid_p1[PIPE_STAGES-2:0], col_valid_q};
+            end
+            assign col_valid_p = col_valid_p1[PIPE_STAGES-1];
+        end else begin : gen_no_pipe_col_valid
+            assign col_valid_p = col_valid_q;
+        end
+    endgenerate
+
     // Output storage: 1 block RAM (simple dual-port, registered read)
     reg [OUT_WIDTH-1:0] res_mem [0:OUT_TOTAL-1];
     reg [OUT_WIDTH-1:0] res_rd_data_q;
 
     always @(posedge clk_i) begin : res_write
-        if (result_valid_p) res_mem[out_addr] <= result;
+        if (result_valid_p && col_valid_p) res_mem[out_addr] <= result;
     end
 
     always @(posedge clk_i) begin : res_read
@@ -211,7 +248,7 @@ module accelerator_top #(
     ) u_out (
         .clk_i       (clk_i),
         .rst_n_i     (rst_n_i),
-        .en_i        (result_valid_p),
+        .en_i        (result_valid_p && col_valid_p),
         .rst_count_i (rst_count),
         .addr_o      (out_addr),
         .last_o      ()
