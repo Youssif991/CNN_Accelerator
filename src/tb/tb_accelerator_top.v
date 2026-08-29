@@ -7,13 +7,16 @@
 // Module Name: tb_accelerator_top
 // Tool Versions: Vivado 2025.2
 // Description: End-to-end self-checking testbench for the accelerator top.
-//              Loads the kernel and input image through the host ports,
-//              runs a frame, reads the output memory back, and compares
-//              every result against an independent triple-loop convolution
-//              golden model (with round-half-up and saturation). Covers an
-//              all-zero frame, randomized frames, host-paced kernel writes
-//              with gaps, and input double buffering with a host write
-//              issued during the compute pass.
+//              Loads the kernel through the host port (host-paced), then
+//              streams the input image one 8-bit pixel per cycle through
+//              pixel_in_i/pixel_valid_i and compares every output against an
+//              independent triple-loop convolution golden model (with
+//              round-half-up and saturation). Results are checked on both the
+//              streaming output port (result_o/result_valid_o) and the output
+//              memory readback. Covers an all-zero frame, randomized frames,
+//              host-paced kernel writes with gaps, and pixel-stream stalls
+//              (pixel_valid_i deasserted mid-frame) which must not corrupt the
+//              sliding window or the output stream.
 //
 // Dependencies: accelerator_top (src/top/accelerator_top.v)
 //
@@ -48,32 +51,36 @@ module tb_accelerator_top;
     reg clk_i;
     reg rst_n_i;
     reg start_i;
-    reg buf_sel_i;
+    reg pixel_valid_i;
+    reg [PIXEL_WIDTH-1:0] pixel_in_i;
     reg kernel_wr_valid_i;
     reg [COEFF_WIDTH-1:0] kernel_wr_data_i;
-    reg img_wr_valid_i;
-    reg [PIX_ADDR_WIDTH:0] img_wr_addr_i;
-    reg [PIXEL_WIDTH-1:0] img_wr_data_i;
     reg [OUT_ADDR_WIDTH-1:0] res_rd_addr_i;
     wire busy_o;
     wire done_o;
     wire [2:0] state_o;
     wire [OUT_WIDTH-1:0] res_rd_data_o;
+    wire result_valid_o;
+    wire [OUT_WIDTH-1:0] result_o;
 
     // Test infrastructure
     integer errors = 0;
     integer w;  // image write index
     integer t;  // kernel tap index
-    integer f;  // frame / buffer index
+    integer f;  // frame index
+    integer stream_idx;  // index into the captured stream-out buffer
 
     // Golden reference model data
-    reg [PIXEL_WIDTH-1:0] ref_img[0:2*TOTAL_PIXELS-1];  // 2x double-buffered
+    reg [PIXEL_WIDTH-1:0] ref_img[0:TOTAL_PIXELS-1];
     reg signed [COEFF_WIDTH-1:0] ref_kernel[0:N*N-1];
     reg signed [SUM_WIDTH-1:0] ref_sum;
     reg signed [SUM_WIDTH-1:0] ref_shifted;
     reg signed [OUT_WIDTH-1:0] ref_out;
 
-    // Module instantiation
+    // Captured streaming output (indexed by result_valid_o pulses)
+    reg signed [OUT_WIDTH-1:0] stream_out[0:OUT_TOTAL-1];
+
+    // Module instantiation (defaults: streaming input, PIPE_STAGES=2)
     accelerator_top #(
         .N           (N),
         .IMAGE_WIDTH (IMAGE_WIDTH),
@@ -85,17 +92,17 @@ module tb_accelerator_top;
         .clk_i            (clk_i),
         .rst_n_i          (rst_n_i),
         .start_i          (start_i),
-        .buf_sel_i        (buf_sel_i),
+        .pixel_in_i       (pixel_in_i),
+        .pixel_valid_i    (pixel_valid_i),
         .kernel_wr_valid_i(kernel_wr_valid_i),
         .kernel_wr_data_i (kernel_wr_data_i),
-        .img_wr_valid_i   (img_wr_valid_i),
-        .img_wr_addr_i    (img_wr_addr_i),
-        .img_wr_data_i    (img_wr_data_i),
         .res_rd_addr_i    (res_rd_addr_i),
         .busy_o           (busy_o),
         .done_o           (done_o),
         .state_o          (state_o),
-        .res_rd_data_o    (res_rd_data_o)
+        .res_rd_data_o    (res_rd_data_o),
+        .result_valid_o   (result_valid_o),
+        .result_o         (result_o)
     );
 
     // Clock generation: free-running 20 ns period (50 MHz)
@@ -104,23 +111,25 @@ module tb_accelerator_top;
         forever #10 clk_i = ~clk_i;
     end
 
-    // Task: write one pixel into the input buffer (host-paced pulse)
-    task write_pixel;
-        input [PIX_ADDR_WIDTH:0] addr;
-        input [PIXEL_WIDTH-1:0] data;
-        begin
-            img_wr_addr_i  = addr;
-            img_wr_data_i  = data;
-            img_wr_valid_i = 1;
-            @(negedge clk_i);
-            img_wr_valid_i = 0;
+    // Capture the streaming output in order of the valid pulses. stream_idx
+    // also serves as the result_valid_o pulse counter (reset before each frame
+    // in the test procedure; the reset and the capture never fire together).
+    initial begin : capture_stream
+        stream_idx = 0;
+        forever begin
+            @(posedge clk_i);
+            if (result_valid_o) begin
+                stream_out[stream_idx] = result_o;
+                stream_idx = stream_idx + 1;
+            end
         end
-    endtask
+    end
 
     // Task: write one kernel coefficient (host-paced pulse)
     task write_kernel;
         input [COEFF_WIDTH-1:0] coef;
         begin
+            @(negedge clk_i);
             kernel_wr_data_i  = coef;
             kernel_wr_valid_i = 1;
             @(negedge clk_i);
@@ -135,13 +144,31 @@ module tb_accelerator_top;
         end
     endtask
 
-    // Task: load the full image of one buffer from the reference array
-    task load_image;
-        input integer b;
+    // Task: stream the input image, one pixel per cycle, from the reference
+    // array. When stall_every > 0, deassert pixel_valid_i for 1-3 cycles
+    // after every stall_every-th pixel to exercise the stall handling.
+    task stream_image;
+        input integer stall_every;
+        integer p;
+        integer stall_len;
         begin
-            for (w = 0; w < TOTAL_PIXELS; w = w + 1) begin
-                write_pixel({b[0], w[PIX_ADDR_WIDTH-1:0]}, ref_img[b*TOTAL_PIXELS+w]);
+            // Wait until the FSM reaches FILL before presenting pixels
+            while (state_o !== 2) @(negedge clk_i);
+            for (p = 0; p < TOTAL_PIXELS; p = p + 1) begin
+                @(negedge clk_i);
+                pixel_in_i = ref_img[p];
+                pixel_valid_i = 1;
+                if (stall_every && ((p % stall_every) == (stall_every - 1))) begin
+                    // Inject a 1-3 cycle stall after this pixel is accepted
+                    stall_len = 1 + (p % 3);
+                    repeat (stall_len) begin
+                        @(negedge clk_i);
+                        pixel_valid_i = 0;
+                    end
+                end
             end
+            @(negedge clk_i);
+            pixel_valid_i = 0;
         end
     endtask
 
@@ -149,6 +176,7 @@ module tb_accelerator_top;
     task run_frame;
         input integer gap_writes;
         begin
+            @(negedge clk_i);
             start_i = 1;
             @(negedge clk_i);
             start_i = 0;
@@ -160,9 +188,9 @@ module tb_accelerator_top;
     endtask
 
     // Task: read back all outputs of one frame and compare with the golden
-    // triple-loop convolution model
+    // triple-loop convolution model. Checks both the memory readback and the
+    // captured streaming port.
     task check_outputs;
-        input integer b;
         integer a;  // output address
         integer r;  // output row
         integer c;  // output col
@@ -173,7 +201,7 @@ module tb_accelerator_top;
                 ref_sum = 0;
                 for (t = 0; t < N * N; t = t + 1) begin
                     ref_sum = ref_sum + $signed(
-                        {1'b0, ref_img[b*TOTAL_PIXELS+(r+t/N)*IMAGE_WIDTH+c+t%N]}) * ref_kernel[t];
+                        {1'b0, ref_img[(r + t / N) * IMAGE_WIDTH + c + t % N]}) * ref_kernel[t];
                 end
                 ref_shifted = ref_sum + (1 << (BITS_DROPPED - 1));
                 ref_shifted = ref_shifted >>> BITS_DROPPED;
@@ -184,12 +212,20 @@ module tb_accelerator_top;
                 end else begin
                     ref_out = $signed(ref_shifted[OUT_WIDTH-1:0]);
                 end
+                // Streaming port check
+                if (stream_out[a] !== ref_out) begin
+                    errors = errors + 1;
+                    $display("FAIL t=%0t: stream_out[%0d] = %0d expected %0d", $time, a,
+                             stream_out[a], ref_out);
+                end
+                // Memory readback check
+                @(negedge clk_i);
                 res_rd_addr_i = a;
                 @(negedge clk_i);
                 @(negedge clk_i);
                 if (res_rd_data_o !== ref_out) begin
                     errors = errors + 1;
-                    $display("FAIL t=%0t: out[%0d] b=%0d = %0d expected %0d", $time, a, b,
+                    $display("FAIL t=%0t: out[%0d] = %0d expected %0d", $time, a,
                              res_rd_data_o, ref_out);
                 end
             end
@@ -200,12 +236,10 @@ module tb_accelerator_top;
     initial begin : test
         // Drive all inputs low and assert reset
         start_i = 0;
-        buf_sel_i = 0;
+        pixel_valid_i = 0;
+        pixel_in_i = 0;
         kernel_wr_valid_i = 0;
         kernel_wr_data_i = 0;
-        img_wr_valid_i = 0;
-        img_wr_addr_i = 0;
-        img_wr_data_i = 0;
         res_rd_addr_i = 0;
         rst_n_i = 0;
 
@@ -215,56 +249,68 @@ module tb_accelerator_top;
 
         // Directed test 1: all-zero kernel and image produce all-zero outputs
         for (t = 0; t < N * N; t = t + 1) ref_kernel[t] = 0;
-        for (w = 0; w < TOTAL_PIXELS; w = w + 1) begin
-            ref_img[w] = 0;
-            ref_img[TOTAL_PIXELS+w] = 0;
-        end
-        load_image(0);
-        buf_sel_i = 0;
+        for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[w] = 0;
         run_frame(0);
+        stream_idx = 0;
+        stream_image(0);  // no stalls
         wait_done();
-        check_outputs(0);
+        #20;  // settle so the final output writes land before readback
+        check_outputs();
+        if (stream_idx !== OUT_TOTAL) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: result_valid_o pulses=%0d expected %0d", $time, stream_idx,
+                     OUT_TOTAL);
+        end
 
-        // Directed test 2: random kernel and image on buffer 0
+        // Directed test 2: random kernel and image, continuous stream
         for (t = 0; t < N * N; t = t + 1) ref_kernel[t] = $urandom;
         for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[w] = $urandom;
-        load_image(0);
-        buf_sel_i = 0;
         run_frame(0);
+        stream_idx = 0;
+        stream_image(0);
         wait_done();
-        check_outputs(0);
-
-        // Directed test 3: input double buffering.
-        // Load buffer 1, compute on it, and write a fresh image into buffer 0
-        // during the compute pass; then compute buffer 0 and verify both.
-        for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[TOTAL_PIXELS+w] = $urandom;
-        load_image(1);
-        buf_sel_i = 1;
-        run_frame(0);
-        // Write the next frame's image into buffer 0 while frame 1 computes
-        for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[w] = $urandom;
-        for (w = 0; w < TOTAL_PIXELS; w = w + 1) begin
-            write_pixel({1'b0, w[PIX_ADDR_WIDTH-1:0]}, ref_img[w]);
+        #20;
+        check_outputs();
+        if (stream_idx !== OUT_TOTAL) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: result_valid_o pulses=%0d expected %0d", $time, stream_idx,
+                     OUT_TOTAL);
         end
+
+        // Directed test 3: random kernel and image with pixel-stream stalls.
+        // pixel_valid_i deasserts for 1-3 cycles every 32 pixels; the window
+        // and counters must stay synchronized and all outputs must match.
+        for (t = 0; t < N * N; t = t + 1) ref_kernel[t] = $urandom;
+        for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[w] = $urandom;
+        run_frame(3);  // gapped kernel writes too
+        stream_idx = 0;
+        stream_image(32);  // stalls every 32 pixels
         wait_done();
-        check_outputs(1);
-        // Now compute the newly loaded buffer 0
-        buf_sel_i = 0;
-        run_frame(0);
-        wait_done();
-        check_outputs(0);
+        #20;
+        check_outputs();
+        if (stream_idx !== OUT_TOTAL) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: stalled result_valid_o pulses=%0d expected %0d", $time,
+                     stream_idx, OUT_TOTAL);
+        end
 
         // Random stimulus
         // Two more random frames with host-paced kernel writes (gaps every
-        // third write) alternating buffers.
+        // third write) and random stall patterns.
         for (f = 0; f < 2; f = f + 1) begin
             for (t = 0; t < N * N; t = t + 1) ref_kernel[t] = $urandom;
-            for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[f*TOTAL_PIXELS+w] = $urandom;
-            load_image(f);
-            buf_sel_i = f[0];
+            for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[w] = $urandom;
             run_frame(3);
+            stream_idx = 0;
+            stream_image(f ? 16 : 64);  // different stall cadences
             wait_done();
-            check_outputs(f);
+            #20;
+            check_outputs();
+            if (stream_idx !== OUT_TOTAL) begin
+                errors = errors + 1;
+                $display("FAIL t=%0t: result_valid_o pulses=%0d expected %0d", $time,
+                         stream_idx, OUT_TOTAL);
+            end
         end
 
         // Allow the last transaction to settle, then report

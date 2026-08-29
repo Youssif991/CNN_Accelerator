@@ -13,7 +13,8 @@
 //              (independent of the DUT's address generators); the checker
 //              compares every FSM and address-generator output on negedge.
 //              Covers reset, a full frame with exact cycle counts, a second
-//              frame, and randomized start-request stimulus.
+//              frame, pixel-stream stalls (pixel_valid_i deasserted), and
+//              randomized start-request stimulus.
 //
 // Dependencies: conv_fsm (src/control/conv_fsm.v)
 //               addr_gen_in (src/control/addr_gen_in.v)
@@ -46,16 +47,14 @@ module tb_conv_fsm;
     reg clk_i;
     reg rst_n_i;
     reg start_i;
-    reg buf_sel_i;
+    reg pixel_valid_i;
     reg kernel_wr_valid_i;
     reg [COEFF_WIDTH-1:0] kernel_data_i;
     wire kernel_we_o;
     wire [$clog2(N*N)-1:0] kernel_addr_o;
     wire shift_valid_o;
-    wire mem_rd_en_o;
     wire result_valid_o;
     wire rst_count_o;
-    wire rd_buf_o;
     wire busy_o;
     wire done_o;
     wire [STATE_WIDTH-1:0] state_o;
@@ -89,7 +88,7 @@ module tb_conv_fsm;
         .clk_i         (clk_i),
         .rst_n_i       (rst_n_i),
         .start_i       (start_i),
-        .buf_sel_i     (buf_sel_i),
+        .pixel_valid_i (pixel_valid_i),
         .kernel_wr_valid_i(kernel_wr_valid_i),
         .kernel_data_i (kernel_data_i),
         .pix_addr_i    (pix_addr),
@@ -97,10 +96,8 @@ module tb_conv_fsm;
         .kernel_we_o   (kernel_we_o),
         .kernel_addr_o (kernel_addr_o),
         .shift_valid_o (shift_valid_o),
-        .mem_rd_en_o   (mem_rd_en_o),
         .result_valid_o(result_valid_o),
         .rst_count_o   (rst_count_o),
-        .rd_buf_o      (rd_buf_o),
         .busy_o        (busy_o),
         .done_o        (done_o),
         .state_o       (state_o)
@@ -152,7 +149,6 @@ module tb_conv_fsm;
     reg [$clog2(N*N)-1:0] ref_load_q;  // kernel load index
     reg [1:0] ref_exit_q;  // compute-exit countdown
     reg expected_result_valid;
-    reg expected_rd_buf;
     reg [OUT_ADDR_WIDTH-1:0] expected_out_cnt_q;
 
     always @(posedge clk_i or negedge rst_n_i) begin : reference
@@ -162,16 +158,14 @@ module tb_conv_fsm;
             ref_load_q <= 0;
             ref_exit_q <= 0;
             expected_result_valid <= 1'b0;
-            expected_rd_buf <= 1'b0;
             expected_out_cnt_q <= 0;
         end else begin
-            // Read buffer: latch only when the frame actually starts
-            if (start_i && (ref_phase_q == PH_IDLE)) expected_rd_buf <= buf_sel_i;
-
-            // Shift counter: restart at frame start, count while shifting
+            // Shift counter: restart at frame start, count only accepted pixels
+            // (a deasserted pixel_valid_i stalls the stream without shifting)
             if (rst_count_o) begin
                 ref_shifts_q <= 0;
-            end else if ((ref_phase_q == PH_FILL) || (ref_phase_q == PH_COMPUTE)) begin
+            end else if (((ref_phase_q == PH_FILL) || (ref_phase_q == PH_COMPUTE)) &&
+                         pixel_valid_i) begin
                 ref_shifts_q <= ref_shifts_q + 1;
             end
 
@@ -193,7 +187,7 @@ module tb_conv_fsm;
                 end
                 // Shift the stream and produce one output pixel per cycle
                 PH_COMPUTE: begin
-                    expected_result_valid <= ref_block_valid;
+                    expected_result_valid <= ref_block_valid && pixel_valid_i;
                     if (ref_shifts_q == TOTAL_PIXELS-1) begin
                         ref_exit_q <= 2;
                     end else if (ref_exit_q > 0) begin
@@ -220,9 +214,12 @@ module tb_conv_fsm;
     wire ref_block_valid = (ref_shifts_q / IMAGE_WIDTH >= N-1) &&
                            (ref_shifts_q % IMAGE_WIDTH >= N-1);
 
-    // Expected Moore outputs (combinational from the reference phase)
+    // Expected Moore outputs (combinational from the reference phase).
+    // shift_valid is gated by the pixel stream: a deasserted valid stalls
+    // the datapath (line buffers, window, address counters).
     wire expected_kernel_we = (ref_phase_q == PH_LOAD);
-    wire expected_shift_valid = (ref_phase_q == PH_FILL) || (ref_phase_q == PH_COMPUTE);
+    wire expected_shift_valid =
+        ((ref_phase_q == PH_FILL) || (ref_phase_q == PH_COMPUTE)) && pixel_valid_i;
     wire expected_rst_count = (ref_phase_q == PH_LOAD);
     wire expected_busy = (ref_phase_q != PH_IDLE) && (ref_phase_q != PH_DONE);
     wire expected_done = (ref_phase_q == PH_DONE);
@@ -252,11 +249,6 @@ module tb_conv_fsm;
                 $display("FAIL t=%0t: shift_valid=%b expected=%b", $time, shift_valid_o,
                          expected_shift_valid);
             end
-            if (mem_rd_en_o !== expected_shift_valid) begin
-                errors = errors + 1;
-                $display("FAIL t=%0t: mem_rd_en=%b expected=%b", $time, mem_rd_en_o,
-                         expected_shift_valid);
-            end
             if (result_valid_o !== expected_result_valid) begin
                 errors = errors + 1;
                 $display("FAIL t=%0t: result_valid=%b expected=%b", $time, result_valid_o,
@@ -275,11 +267,6 @@ module tb_conv_fsm;
                 errors = errors + 1;
                 $display("FAIL t=%0t: done=%b expected=%b", $time, done_o, expected_done);
             end
-            if (rd_buf_o !== expected_rd_buf) begin
-                errors = errors + 1;
-                $display("FAIL t=%0t: rd_buf=%b expected=%b", $time, rd_buf_o,
-                         expected_rd_buf);
-            end
             if (out_addr !== expected_out_cnt_q) begin
                 errors = errors + 1;
                 $display("FAIL t=%0t: out_addr=%0d expected=%0d", $time, out_addr,
@@ -297,7 +284,7 @@ module tb_conv_fsm;
     initial begin : test
         // Drive all inputs low and assert reset
         start_i = 0;
-        buf_sel_i = 0;
+        pixel_valid_i = 0;
         kernel_wr_valid_i = 0;
         kernel_data_i = 0;
         rst_n_i = 0;
@@ -321,6 +308,7 @@ module tb_conv_fsm;
         valid_count = 0;
         kernel_wr_count = 0;
         seen_done = 0;
+        pixel_valid_i = 1;  // continuous stream for the exact-count frame
 
         start_i = 1;
         repeat (1300) begin
@@ -370,6 +358,7 @@ module tb_conv_fsm;
         kernel_wr_count = 0;
         gap_cnt = 0;
         seen_done = 0;
+        pixel_valid_i = 1;  // continuous stream for the gapped-load frame
 
         start_i = 1;
         repeat (1500) begin
@@ -404,11 +393,11 @@ module tb_conv_fsm;
             $display("FAIL t=%0t: gapped frame never completed", $time);
         end
 
-        // Directed test 4: a second frame on the other buffer starts cleanly
+        // Directed test 4: a second frame starts cleanly after the first
         second_frame_started = 0;
         valid_count = 0;
         kernel_wr_count = 0;
-        buf_sel_i = 1;
+        pixel_valid_i = 1;  // continuous stream for the second frame
 
         start_i = 1;
         repeat (1100) begin
@@ -432,23 +421,71 @@ module tb_conv_fsm;
             $display("FAIL t=%0t: second frame pulses=%0d expected %0d", $time, valid_count,
                      OUT_TOTAL);
         end
-        if (rd_buf_o !== 1) begin
+
+        // Directed test 5: pixel-stream stalls must not break synchronization.
+        // Deassert pixel_valid_i for 3 cycles every 40 during the stream; the
+        // negedge checker compares every FSM/address-generator output against
+        // the stall-aware reference for the whole frame.
+        load_count = 0;
+        valid_count = 0;
+        kernel_wr_count = 0;
+        gap_cnt = 0;
+        seen_done = 0;
+
+        start_i = 1;
+        repeat (1600) begin
+            @(negedge clk_i);
+            start_i = 0;  // one-cycle start pulse
+            if (kernel_wr_count < N*N) begin
+                kernel_wr_valid_i = 1;
+                kernel_wr_count = kernel_wr_count + 1;
+            end else begin
+                kernel_wr_valid_i = 0;
+            end
+            if (state_o >= 2) begin
+                // 3 stall cycles out of every 40 once the stream is active
+                pixel_valid_i = ((gap_cnt % 40) < 3) ? 1'b0 : 1'b1;
+                gap_cnt = gap_cnt + 1;
+            end else begin
+                pixel_valid_i = 0;
+            end
+            if (kernel_we_o && kernel_wr_valid_i) load_count = load_count + 1;
+            if (result_valid_o) valid_count = valid_count + 1;
+            if (done_o) seen_done = 1;
+        end
+
+        if (load_count !== N*N) begin
             errors = errors + 1;
-            $display("FAIL t=%0t: rd_buf not latched to 1 (%0d)", $time, rd_buf_o);
+            $display("FAIL t=%0t: stalled kernel writes=%0d expected %0d", $time, load_count,
+                     N*N);
+        end
+        if (valid_count !== OUT_TOTAL) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: stalled frame pulses=%0d expected %0d", $time, valid_count,
+                     OUT_TOTAL);
+        end
+        if (!seen_done) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: stalled frame never completed", $time);
+        end
+        if (state_o !== 0) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: stalled frame did not re-arm (state=%0d)", $time, state_o);
         end
 
         // Random stimulus
-        // Stress-test with random start, kernel-write, and buffer-select
+        // Stress-test with random start, kernel-write, and pixel-valid
         // toggles across several frames.
         for (i = 0; i < NUM_TESTS; i = i + 1) begin
             @(negedge clk_i);
             start_i = $urandom & 1;
             kernel_wr_valid_i = $urandom & 1;
-            buf_sel_i = $urandom & 1;
+            pixel_valid_i = $urandom & 1;
             kernel_data_i = $urandom;
         end
         start_i = 0;
         kernel_wr_valid_i = 0;
+        pixel_valid_i = 0;
 
         // Allow the last transaction to settle, then report
         #20;
