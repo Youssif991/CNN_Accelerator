@@ -17,7 +17,7 @@
 //              randomized start-request stimulus.
 //
 // Dependencies: conv_fsm (src/control/conv_fsm.v)
-//               addr_gen_in (src/control/addr_gen_in.v)
+//               pixel_counter (src/control/pixel_counter.v)
 //               addr_gen_out (src/control/addr_gen_out.v)
 //
 // Revision:
@@ -103,7 +103,7 @@ module tb_conv_fsm;
         .state_o       (state_o)
     );
 
-    addr_gen_in #(
+    pixel_counter #(
         .IMAGE_WIDTH (IMAGE_WIDTH),
         .IMAGE_HEIGHT(IMAGE_HEIGHT),
         .ADDR_WIDTH  (PIX_ADDR_WIDTH)

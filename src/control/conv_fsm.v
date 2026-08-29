@@ -60,9 +60,7 @@ module conv_fsm #(
     localparam S_COMPUTE = 3;
     localparam S_DONE = 4;
 
-    // Fill cycles: pixels 0..FILL_CYCLES-1 prime the line buffers and the
-    // window without producing output; the next pixel completes the first
-    // NxN block and starts the compute pass.
+    // Fill cycles
     localparam FILL_CYCLES = (N-1) * IMAGE_WIDTH + (N-1);
 
     // Current state
@@ -112,8 +110,6 @@ module conv_fsm #(
                 if (pix_addr_i >= FILL_CYCLES-1) state_d = S_COMPUTE;
             end
             // Shift the stream and produce one output pixel per cycle.
-            // The exit countdown covers the pipelined result latency so the
-            // last output write lands before the DONE handoff.
             S_COMPUTE: begin
                 result_valid_d = block_valid && pixel_valid_i;
                 if (pix_last_i) begin

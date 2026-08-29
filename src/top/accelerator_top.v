@@ -22,7 +22,7 @@
 //              with the data.
 //
 // Dependencies: conv_fsm (src/control/conv_fsm.v)
-//               addr_gen_in (src/control/addr_gen_in.v)
+//               pixel_counter (src/control/pixel_counter.v)
 //               addr_gen_out (src/control/addr_gen_out.v)
 //               line_buffer_bank (src/datapath/line_buffer_bank.v)
 //               window_array (src/datapath/window_array.v)
@@ -45,9 +45,7 @@ module accelerator_top #(
     parameter COEFF_WIDTH = 8,  // Kernel coefficient width (signed)
     parameter OUT_WIDTH = 16,  // Output pixel width (signed)
     parameter ROUND_ENABLE = 1,  // Round-half-up before truncation
-    parameter PIPE_STAGES = 2,  // Pipeline stages after the window array (streaming
-                                // input adds no registered read, so 2 stages align
-                                // the valid flag with the result data)
+    parameter PIPE_STAGES = 2,  // Pipeline stages after the window array
     parameter PIX_ADDR_WIDTH = $clog2(IMAGE_WIDTH * IMAGE_HEIGHT),
     parameter OUT_IMAGE_WIDTH = IMAGE_WIDTH - N + 1,
     parameter OUT_IMAGE_HEIGHT = IMAGE_HEIGHT - N + 1,
@@ -192,8 +190,8 @@ module accelerator_top #(
         .state_o         (state_o)
     );
 
-    // Address generators
-    addr_gen_in #(
+    // Pixel position counter (input) and output address generator
+    pixel_counter #(
         .IMAGE_WIDTH (IMAGE_WIDTH),
         .IMAGE_HEIGHT(IMAGE_HEIGHT),
         .ADDR_WIDTH  (PIX_ADDR_WIDTH)
