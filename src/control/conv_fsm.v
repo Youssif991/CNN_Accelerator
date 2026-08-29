@@ -10,7 +10,10 @@
 //              kernel loading (LOAD), input-stream fill (FILL), the compute
 //              pass (COMPUTE) with one output pixel per cycle, and the done
 //              handoff. The kernel load is host-paced: LOAD advances one
-//              coefficient per kernel_wr_valid_i pulse. Outputs are Moore
+//              coefficient per kernel_wr_valid_i pulse. The pixel stream is
+//              gated by pixel_valid_i: a deasserted valid stalls the shift
+//              (line buffers, window, and address counters all hold), so the
+//              pipeline stays synchronized under stalls. Outputs are Moore
 //              (state-derived); result_valid_o is registered to align with
 //              the combinational MAC result that settles one cycle after its
 //              window block completes.
@@ -35,7 +38,7 @@ module conv_fsm #(
     input wire clk_i,
     input wire rst_n_i,
     input wire start_i,  // Frame start request
-    input wire buf_sel_i,  // Input buffer to convolve (latched at frame start)
+    input wire pixel_valid_i,  // Input pixel valid (deasserted = stall)
     input wire kernel_wr_valid_i,  // Kernel coefficient write valid (host-paced)
     input wire [COEFF_WIDTH-1:0] kernel_data_i,  // Kernel coefficient data in
     input wire [PIX_ADDR_WIDTH-1:0] pix_addr_i,  // Current input pixel index
@@ -43,10 +46,8 @@ module conv_fsm #(
     output wire kernel_we_o,  // Kernel load write enable
     output wire [$clog2(N*N)-1:0] kernel_addr_o,  // Kernel load address
     output wire shift_valid_o,  // Shift the line buffers and the window
-    output wire mem_rd_en_o,  // Input memory read enable
     output wire result_valid_o,  // Output pixel valid (pipeline aligned)
     output wire rst_count_o,  // Reset the address-generator counters
-    output wire rd_buf_o,  // Input buffer selected for the current frame
     output wire busy_o,  // Frame in progress
     output wire done_o,  // Frame complete
     output wire [STATE_WIDTH-1:0] state_o  // Current state (observability)
@@ -80,8 +81,6 @@ module conv_fsm #(
     reg result_valid_q;
     // Result valid (next)
     reg result_valid_d;
-    // Input buffer selected for the current frame (current)
-    reg rd_buf_q;
 
     // Pixel row/column of the current input pixel
     wire [PIX_ADDR_WIDTH-1:0] pix_row = pix_addr_i / IMAGE_WIDTH;
@@ -116,7 +115,7 @@ module conv_fsm #(
             // The exit countdown covers the pipelined result latency so the
             // last output write lands before the DONE handoff.
             S_COMPUTE: begin
-                result_valid_d = block_valid;
+                result_valid_d = block_valid && pixel_valid_i;
                 if (pix_last_i) begin
                     exit_cnt_d = PIPE_STAGES + 2;
                 end else if (exit_cnt_q > 0) begin
@@ -137,27 +136,22 @@ module conv_fsm #(
             load_cnt_q <= 0;
             exit_cnt_q <= 0;
             result_valid_q <= 1'b0;
-            rd_buf_q <= 1'b0;
         end else begin
             state_q <= state_d;
             load_cnt_q <= load_cnt_d;
             exit_cnt_q <= exit_cnt_d;
             result_valid_q <= result_valid_d;
-            // Latch the read buffer only when the frame actually starts
-            if (start_i && (state_q == S_IDLE)) rd_buf_q <= buf_sel_i;
         end
     end
 
     // Output decode (Moore)
     assign kernel_we_o = (state_q == S_LOAD);
     assign kernel_addr_o = load_cnt_q;
-    assign shift_valid_o = (state_q == S_FILL) || (state_q == S_COMPUTE);
-    assign mem_rd_en_o = shift_valid_o;
+    assign shift_valid_o = ((state_q == S_FILL) || (state_q == S_COMPUTE)) && pixel_valid_i;
     assign result_valid_o = result_valid_q;
     assign rst_count_o = (state_q == S_LOAD);
     assign busy_o = (state_q == S_LOAD) || (state_q == S_FILL) || (state_q == S_COMPUTE);
     assign done_o = (state_q == S_DONE);
-    assign rd_buf_o = rd_buf_q;
     assign state_o = state_q;
 
 endmodule
