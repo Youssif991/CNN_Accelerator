@@ -224,7 +224,6 @@ module accelerator_top #(
         .PIXEL_WIDTH  (PIXEL_WIDTH)
     ) u_line_buffer_bank (
         .clk_i         (clk_i),
-        .rst_n_i       (rst_n_i),
         .shift_valid_i (shift_valid),
         .pixel_in_i    (pixel_in_i),
         .row_streams_o (row_streams)

@@ -8,10 +8,10 @@
 // Tool Versions: Vivado 2025.2
 // Description: Self-checking testbench for the line buffer bank. A golden
 //              reference models the N row streams with a single shared delay
-//              line (a different algorithm from the DUT's chained line
+//              (a different algorithm from the DUT's chained line
 //              buffers); the checker compares every row_streams_o slice on
-//              negedge clk. Covers reset, a full multi-row image, hold, and
-//              randomized stimulus.
+//              negedge clk. Covers a reset-free prime, a full multi-row
+//              image, hold, and randomized stimulus.
 //
 // Dependencies: line_buffer_bank (src/datapath/line_buffer_bank.v)
 //               line_buffer (src/datapath/line_buffer.v)
@@ -54,7 +54,6 @@ module tb_line_buffer_bank;
         .PIXEL_WIDTH(PIXEL_WIDTH)
     ) dut (
         .clk_i        (clk_i),
-        .rst_n_i      (rst_n_i),
         .shift_valid_i(shift_valid_i),
         .pixel_in_i   (pixel_in_i),
         .row_streams_o(row_streams_o)
@@ -116,7 +115,17 @@ module tb_line_buffer_bank;
         shift_valid_i = 0;
         pixel_in_i = 0;
 
+        // The buffers have no reset: shift in DELAY_TAPS zeros while reset
+        // is still asserted (the checker is gated off) so every delay tap
+        // holds a known value before the directed tests start.
+        for (i = 0; i < DELAY_TAPS; i = i + 1) begin
+            @(negedge clk_i);
+            shift_valid_i = 1;
+            pixel_in_i = 0;
+        end
         @(negedge clk_i);
+        shift_valid_i = 0;
+
         rst_n_i = 1;  // release reset
 
         // Directed test 1: stream a full 3-row image

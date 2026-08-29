@@ -7,7 +7,9 @@
 // Module Name: line_buffer_bank
 // Tool Versions: Vivado 2025.2
 // Description: Instantiates (N-1) line buffers to delay the N-1 rows above
-//              the current row for NxN sliding-window generation.
+//              the current row for NxN sliding-window generation. Reset-free:
+//              the buffers are primed with the first rows during the FILL
+//              phase before any output is produced.
 //
 // Dependencies: line_buffer (line_buffer.v)
 //
@@ -23,7 +25,6 @@ module line_buffer_bank #(
     parameter PIXEL_WIDTH = 8
 ) (
     input wire clk_i,
-    input wire rst_n_i,
     input wire shift_valid_i,
     input wire [PIXEL_WIDTH-1:0] pixel_in_i,
     output wire [N*PIXEL_WIDTH-1:0] row_streams_o
@@ -44,7 +45,6 @@ module line_buffer_bank #(
                 .PIXEL_WIDTH(PIXEL_WIDTH)
             ) u_line_buffer (
                 .clk_i        (clk_i),
-                .rst_n_i      (rst_n_i),
                 .shift_valid_i(shift_valid_i),
                 .pixel_in_i   (row_chain[g-1]),
                 .pixel_out_o  (row_chain[g])
