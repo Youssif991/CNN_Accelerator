@@ -50,6 +50,7 @@ module accelerator_top #(
     parameter OUT_IMAGE_WIDTH = IMAGE_WIDTH - N + 1,
     parameter OUT_IMAGE_HEIGHT = IMAGE_HEIGHT - N + 1,
     parameter OUT_ADDR_WIDTH = $clog2(OUT_IMAGE_WIDTH * OUT_IMAGE_HEIGHT),
+    parameter OUT_TOTAL = OUT_IMAGE_WIDTH * OUT_IMAGE_HEIGHT,  // output memory depth
     parameter PROD_WIDTH = PIXEL_WIDTH + COEFF_WIDTH + 2,
     parameter SUM_WIDTH = PROD_WIDTH + $clog2(N*N)
 ) (
@@ -66,10 +67,9 @@ module accelerator_top #(
     output wire [2:0] state_o,  // FSM state (observability)
     output wire [OUT_WIDTH-1:0] res_rd_data_o,  // Output read data
     output wire result_valid_o,  // Output pixel valid (pipeline aligned)
-    output wire [OUT_WIDTH-1:0] result_o  // Output pixel data (pipeline aligned)
+    output wire [OUT_WIDTH-1:0] result_o,  // Output pixel data (pipeline aligned)
+    output wire ready_o  // Accepting input pixels (FILL/COMPUTE) - AXI-Stream TREADY
 );
-
-    localparam OUT_TOTAL = OUT_IMAGE_WIDTH * OUT_IMAGE_HEIGHT;
 
     // Control-unit interconnect
     wire [PIX_ADDR_WIDTH-1:0] pix_addr;
@@ -78,6 +78,7 @@ module accelerator_top #(
     wire kernel_we;
     wire [$clog2(N*N)-1:0] kernel_addr;
     wire shift_valid;
+    wire ready;
     wire result_valid;
     wire rst_count;
 
@@ -190,6 +191,8 @@ module accelerator_top #(
 
     assign res_rd_data_o = res_rd_data_q;
 
+    assign ready_o = ready;
+
     // Streaming output (pipeline-aligned with the result data)
     assign result_valid_o = result_valid_p;
     assign result_o       = result;
@@ -215,6 +218,7 @@ module accelerator_top #(
         .kernel_we_o     (kernel_we),
         .kernel_addr_o   (kernel_addr),
         .shift_valid_o   (shift_valid),
+        .ready_o         (ready),
         .result_valid_o  (result_valid),
         .rst_count_o     (rst_count),
         .busy_o          (busy_o),

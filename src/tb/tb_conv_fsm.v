@@ -56,6 +56,7 @@ module tb_conv_fsm;
     wire kernel_we_o;
     wire [$clog2(N*N)-1:0] kernel_addr_o;
     wire shift_valid_o;
+    wire ready_o;
     wire result_valid_o;
     wire rst_count_o;
     wire busy_o;
@@ -99,6 +100,7 @@ module tb_conv_fsm;
         .kernel_we_o   (kernel_we_o),
         .kernel_addr_o (kernel_addr_o),
         .shift_valid_o (shift_valid_o),
+        .ready_o       (ready_o),
         .result_valid_o(result_valid_o),
         .rst_count_o   (rst_count_o),
         .busy_o        (busy_o),
@@ -221,6 +223,7 @@ module tb_conv_fsm;
     // shift_valid is gated by the pixel stream: a deasserted valid stalls
     // the datapath (line buffers, window, address counters).
     wire expected_kernel_we = (ref_phase_q == PH_LOAD);
+    wire expected_ready = (ref_phase_q == PH_FILL) || (ref_phase_q == PH_COMPUTE);
     wire expected_shift_valid =
         ((ref_phase_q == PH_FILL) || (ref_phase_q == PH_COMPUTE)) && pixel_valid_i;
     wire expected_rst_count = (ref_phase_q == PH_LOAD);
@@ -251,6 +254,10 @@ module tb_conv_fsm;
                 errors = errors + 1;
                 $display("FAIL t=%0t: shift_valid=%b expected=%b", $time, shift_valid_o,
                          expected_shift_valid);
+            end
+            if (ready_o !== expected_ready) begin
+                errors = errors + 1;
+                $display("FAIL t=%0t: ready=%b expected=%b", $time, ready_o, expected_ready);
             end
             if (result_valid_o !== expected_result_valid) begin
                 errors = errors + 1;

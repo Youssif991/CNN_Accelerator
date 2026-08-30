@@ -46,6 +46,7 @@ module conv_fsm #(
     output wire kernel_we_o,  // Kernel load write enable
     output wire [$clog2(N*N)-1:0] kernel_addr_o,  // Kernel load address
     output wire shift_valid_o,  // Shift the line buffers and the window
+    output wire ready_o,  // Accepting input pixels (FILL or COMPUTE, ungated)
     output wire result_valid_o,  // Output pixel valid (pipeline aligned)
     output wire rst_count_o,  // Reset the address-generator counters
     output wire busy_o,  // Frame in progress
@@ -142,6 +143,7 @@ module conv_fsm #(
     assign kernel_we_o = (state_q == S_LOAD);
     assign kernel_addr_o = load_cnt_q;
     assign shift_valid_o = ((state_q == S_FILL) || (state_q == S_COMPUTE)) && pixel_valid_i;
+    assign ready_o = (state_q == S_FILL) || (state_q == S_COMPUTE);
     assign result_valid_o = result_valid_q;
     assign rst_count_o = (state_q == S_LOAD);
     assign busy_o = (state_q == S_LOAD) || (state_q == S_FILL) || (state_q == S_COMPUTE);
