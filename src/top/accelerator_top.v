@@ -66,8 +66,10 @@ module accelerator_top #(
     output wire done_o,  // Frame complete
     output wire [2:0] state_o,  // FSM state (observability)
     output wire [OUT_WIDTH-1:0] res_rd_data_o,  // Output read data
-    output wire result_valid_o,  // Output pixel valid (pipeline aligned)
-    output wire [OUT_WIDTH-1:0] result_o,  // Output pixel data (pipeline aligned)
+    output wire result_valid_o,  // Output word available (FIFO not empty)
+    output wire [OUT_WIDTH-1:0] result_o,  // Output data (FIFO read)
+    output wire result_tlast_o,  // Last output word of the frame
+    input wire result_ready_i,  // Output ready
     output wire ready_o  // Accepting input pixels (FILL/COMPUTE) - AXI-Stream TREADY
 );
 
@@ -97,14 +99,49 @@ module accelerator_top #(
     wire result_valid_p;  // result valid shifted with the pipeline data
     wire col_valid;  // current pixel is in an in-image output column (>= N-1)
     wire col_valid_p;  // col_valid shifted with the pipeline data
+    wire last_p;  // frame-last flag shifted with the pipeline data
+    wire output_stall;  // a result is ready but the output FIFO cannot accept it
+    wire fifo_wr_ready;  // output FIFO write ready (not full)
+    wire fifo_rd_valid;  // output FIFO read valid (not empty)
+    wire [OUT_WIDTH:0] fifo_rd_data;  // output FIFO read data {last, result}
 
-    // Pipeline stage 1: register the MAC products
+    // Back-pressure: freeze the pipeline when a result cannot be delivered
+    assign output_stall = result_valid_p && !fifo_wr_ready;
+
+    // Frame-last flag: the last accepted pixel's result ends the frame
+    reg last_q;
+    always @(posedge clk_i or negedge rst_n_i) begin : last_reg
+        if (!rst_n_i) last_q <= 1'b0;
+        else if (!output_stall) last_q <= pix_last;
+    end
+
+    generate
+        if (PIPE_STAGES == 1) begin : gen_pipe_last1
+            reg last_p1;
+            always @(posedge clk_i or negedge rst_n_i) begin : stage
+                if (!rst_n_i) last_p1 <= 1'b0;
+                else if (!output_stall) last_p1 <= last_q;
+            end
+            assign last_p = last_p1;
+        end else if (PIPE_STAGES >= 2) begin : gen_pipe_lastn
+            reg [PIPE_STAGES-1:0] last_p1;
+            always @(posedge clk_i or negedge rst_n_i) begin : stage
+                if (!rst_n_i) last_p1 <= 0;
+                else if (!output_stall) last_p1 <= {last_p1[PIPE_STAGES-2:0], last_q};
+            end
+            assign last_p = last_p1[PIPE_STAGES-1];
+        end else begin : gen_no_pipe_last
+            assign last_p = last_q;
+        end
+    endgenerate
+
+    // Pipeline stage 1: register the MAC products (holds while the output consumer is stalled so no result is lost)
     generate
         if (PIPE_STAGES >= 1) begin : gen_pipe_products
             reg [N*N*PROD_WIDTH-1:0] products_p1;
             always @(posedge clk_i or negedge rst_n_i) begin : stage
                 if (!rst_n_i) products_p1 <= 0;
-                else products_p1 <= products;
+                else if (!output_stall) products_p1 <= products;
             end
             assign products_to_tree = products_p1;
         end else begin : gen_no_pipe_products
@@ -112,13 +149,13 @@ module accelerator_top #(
         end
     endgenerate
 
-    // Pipeline stage 2: register the adder-tree sum
+    // Pipeline stage 2: register the adder-tree sum (holds while stalled)
     generate
         if (PIPE_STAGES >= 2) begin : gen_pipe_sum
             reg signed [SUM_WIDTH-1:0] sum_p1;
             always @(posedge clk_i or negedge rst_n_i) begin : stage
                 if (!rst_n_i) sum_p1 <= 0;
-                else sum_p1 <= conv_sum;
+                else if (!output_stall) sum_p1 <= conv_sum;
             end
             assign sum_to_sat = sum_p1;
         end else begin : gen_no_pipe_sum
@@ -126,20 +163,20 @@ module accelerator_top #(
         end
     endgenerate
 
-    // Pipeline valid: shifts with the data through the pipeline stages
+    // Pipeline valid: shifts with the data (holds while stalled)
     generate
         if (PIPE_STAGES == 1) begin : gen_pipe_valid1
             reg valid_p1;
             always @(posedge clk_i or negedge rst_n_i) begin : stage
                 if (!rst_n_i) valid_p1 <= 1'b0;
-                else valid_p1 <= result_valid;
+                else if (!output_stall) valid_p1 <= result_valid;
             end
             assign result_valid_p = valid_p1;
         end else if (PIPE_STAGES >= 2) begin : gen_pipe_validn
             reg [PIPE_STAGES-1:0] valid_p1;
             always @(posedge clk_i or negedge rst_n_i) begin : stage
                 if (!rst_n_i) valid_p1 <= 0;
-                else valid_p1 <= {valid_p1[PIPE_STAGES-2:0], result_valid};
+                else if (!output_stall) valid_p1 <= {valid_p1[PIPE_STAGES-2:0], result_valid};
             end
             assign result_valid_p = valid_p1[PIPE_STAGES-1];
         end else begin : gen_no_pipe_valid
@@ -150,11 +187,11 @@ module accelerator_top #(
     // Column-valid flag
     assign col_valid = (pix_addr % IMAGE_WIDTH) >= (N-1);
 
-    // Register col_valid
+    // Register col_valid (extra cycle to match result_valid_p; holds while the pipeline is stalled)
     reg col_valid_q;
     always @(posedge clk_i or negedge rst_n_i) begin : col_valid_reg
         if (!rst_n_i) col_valid_q <= 1'b0;
-        else col_valid_q <= col_valid;
+        else if (!output_stall) col_valid_q <= col_valid;
     end
 
     generate
@@ -162,14 +199,14 @@ module accelerator_top #(
             reg col_valid_p1;
             always @(posedge clk_i or negedge rst_n_i) begin : stage
                 if (!rst_n_i) col_valid_p1 <= 1'b0;
-                else col_valid_p1 <= col_valid_q;
+                else if (!output_stall) col_valid_p1 <= col_valid_q;
             end
             assign col_valid_p = col_valid_p1;
         end else if (PIPE_STAGES >= 2) begin : gen_pipe_col_validn
             reg [PIPE_STAGES-1:0] col_valid_p1;
             always @(posedge clk_i or negedge rst_n_i) begin : stage
                 if (!rst_n_i) col_valid_p1 <= 0;
-                else col_valid_p1 <= {col_valid_p1[PIPE_STAGES-2:0], col_valid_q};
+                else if (!output_stall) col_valid_p1 <= {col_valid_p1[PIPE_STAGES-2:0], col_valid_q};
             end
             assign col_valid_p = col_valid_p1[PIPE_STAGES-1];
         end else begin : gen_no_pipe_col_valid
@@ -182,7 +219,9 @@ module accelerator_top #(
     reg [OUT_WIDTH-1:0] res_rd_data_q;
 
     always @(posedge clk_i) begin : res_write
-        if (result_valid_p && col_valid_p) res_mem[out_addr] <= result;
+        // Fire once per result (the write enable is a pulse only while the
+        // pipeline advances, so a stalled result is not written repeatedly)
+        if (result_valid_p && col_valid_p && !output_stall) res_mem[out_addr] <= result;
     end
 
     always @(posedge clk_i) begin : res_read
@@ -193,9 +232,28 @@ module accelerator_top #(
 
     assign ready_o = ready;
 
-    // Streaming output (pipeline-aligned with the result data)
-    assign result_valid_o = result_valid_p;
-    assign result_o       = result;
+    // Output FIFO: decouples the pipeline from the consumer. The write side
+    // accepts the gap-free result stream (border windows included); when it
+    // is full the pipeline stalls (output_stall). The read side is FWFT and
+    // carries the frame-last flag for tlast.
+    output_fifo #(
+        .DATA_WIDTH(OUT_WIDTH + 1),  // {frame_last, result}
+        .DEPTH(16)
+    ) u_out_fifo (
+        .clk_i     (clk_i),
+        .rst_n_i   (rst_n_i),
+        .wr_data_i ({last_p, result}),
+        .wr_valid_i(result_valid_p),
+        .wr_ready_o(fifo_wr_ready),
+        .rd_data_o (fifo_rd_data),
+        .rd_valid_o(fifo_rd_valid),
+        .rd_ready_i(result_ready_i)
+    );
+
+    // Streaming output (FIFO read side, first-word-fall-through)
+    assign result_valid_o = fifo_rd_valid;
+    assign result_o       = fifo_rd_data[OUT_WIDTH-1:0];
+    assign result_tlast_o = fifo_rd_data[OUT_WIDTH];
 
     // Frame controller
     conv_fsm #(
@@ -211,6 +269,7 @@ module accelerator_top #(
         .rst_n_i         (rst_n_i),
         .start_i         (start_i),
         .pixel_valid_i   (pixel_valid_i),
+        .output_stall_i  (output_stall),
         .kernel_wr_valid_i(kernel_wr_valid_i),
         .kernel_data_i   (kernel_wr_data_i),
         .pix_addr_i      (pix_addr),
@@ -247,7 +306,7 @@ module accelerator_top #(
     ) u_out (
         .clk_i       (clk_i),
         .rst_n_i     (rst_n_i),
-        .en_i        (result_valid_p && col_valid_p),
+        .en_i        (result_valid_p && col_valid_p && !output_stall),
         .rst_count_i (rst_count),
         .addr_o      (out_addr),
         .last_o      ()
