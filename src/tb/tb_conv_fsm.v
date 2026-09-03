@@ -51,6 +51,7 @@ module tb_conv_fsm;
     reg rst_n_i;
     reg start_i;
     reg pixel_valid_i;
+    reg output_stall_i;
     reg kernel_wr_valid_i;
     reg [COEFF_WIDTH-1:0] kernel_data_i;
     wire kernel_we_o;
@@ -93,6 +94,7 @@ module tb_conv_fsm;
         .rst_n_i       (rst_n_i),
         .start_i       (start_i),
         .pixel_valid_i (pixel_valid_i),
+        .output_stall_i(output_stall_i),
         .kernel_wr_valid_i(kernel_wr_valid_i),
         .kernel_data_i (kernel_data_i),
         .pix_addr_i    (pix_addr),
@@ -225,7 +227,8 @@ module tb_conv_fsm;
     wire expected_kernel_we = (ref_phase_q == PH_LOAD);
     wire expected_ready = (ref_phase_q == PH_FILL) || (ref_phase_q == PH_COMPUTE);
     wire expected_shift_valid =
-        ((ref_phase_q == PH_FILL) || (ref_phase_q == PH_COMPUTE)) && pixel_valid_i;
+        ((ref_phase_q == PH_FILL) || (ref_phase_q == PH_COMPUTE)) && pixel_valid_i &&
+        !output_stall_i;
     wire expected_rst_count = (ref_phase_q == PH_LOAD);
     wire expected_busy = (ref_phase_q != PH_IDLE) && (ref_phase_q != PH_DONE);
     wire expected_done = (ref_phase_q == PH_DONE);
@@ -295,6 +298,7 @@ module tb_conv_fsm;
         // Drive all inputs low and assert reset
         start_i = 0;
         pixel_valid_i = 0;
+        output_stall_i = 0;
         kernel_wr_valid_i = 0;
         kernel_data_i = 0;
         rst_n_i = 0;
