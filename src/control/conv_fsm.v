@@ -39,6 +39,7 @@ module conv_fsm #(
     input wire rst_n_i,
     input wire start_i,  // Frame start request
     input wire pixel_valid_i,  // Input pixel valid (deasserted = stall)
+    input wire output_stall_i,  // Output consumer stalled (freeze the accept)
     input wire kernel_wr_valid_i,  // Kernel coefficient write valid (host-paced)
     input wire [COEFF_WIDTH-1:0] kernel_data_i,  // Kernel coefficient data in
     input wire [PIX_ADDR_WIDTH-1:0] pix_addr_i,  // Current input pixel index
@@ -142,7 +143,8 @@ module conv_fsm #(
     // Output decode (Moore)
     assign kernel_we_o = (state_q == S_LOAD);
     assign kernel_addr_o = load_cnt_q;
-    assign shift_valid_o = ((state_q == S_FILL) || (state_q == S_COMPUTE)) && pixel_valid_i;
+    assign shift_valid_o = ((state_q == S_FILL) || (state_q == S_COMPUTE)) && pixel_valid_i &&
+                           !output_stall_i;
     assign ready_o = (state_q == S_FILL) || (state_q == S_COMPUTE);
     assign result_valid_o = result_valid_q;
     assign rst_count_o = (state_q == S_LOAD);

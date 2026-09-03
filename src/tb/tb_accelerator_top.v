@@ -64,8 +64,10 @@ module tb_accelerator_top;
     wire done_o;
     wire [2:0] state_o;
     wire [OUT_WIDTH-1:0] res_rd_data_o;
+    reg result_ready_i;
     wire result_valid_o;
     wire [OUT_WIDTH-1:0] result_o;
+    wire result_tlast_o;
 
     // Test infrastructure
     integer errors = 0;
@@ -73,6 +75,7 @@ module tb_accelerator_top;
     integer t;  // kernel tap index
     integer f;  // frame index
     integer stream_idx;  // index into the captured stream-out buffer
+    integer tlast_pulses;  // result_tlast_o pulse counter (reset per frame)
 
     // Golden reference model data
     reg [PIXEL_WIDTH-1:0] ref_img[0:TOTAL_PIXELS-1];
@@ -107,7 +110,9 @@ module tb_accelerator_top;
         .state_o          (state_o),
         .res_rd_data_o    (res_rd_data_o),
         .result_valid_o   (result_valid_o),
-        .result_o         (result_o)
+        .result_o         (result_o),
+        .result_tlast_o   (result_tlast_o),
+        .result_ready_i   (result_ready_i)
     );
 
     // Clock generation: free-running 20 ns period (50 MHz)
@@ -116,17 +121,40 @@ module tb_accelerator_top;
         forever #10 clk_i = ~clk_i;
     end
 
-    // Capture the streaming output in order of the valid pulses. stream_idx
-    // also serves as the result_valid_o pulse counter (reset before each frame
-    // in the test procedure; the reset and the capture never fire together).
+    // Capture the streamed output words (counted per valid+ready transfer so
+    // consumer stalls do not lose or double-count words). stream_idx is reset
+    // before each frame in the test procedure; the reset and the capture never
+    // fire together.
     initial begin : capture_stream
         stream_idx = 0;
         forever begin
             @(posedge clk_i);
-            if (result_valid_o) begin
+            if (result_valid_o && result_ready_i) begin
                 stream_out[stream_idx] = result_o;
                 stream_idx = stream_idx + 1;
             end
+        end
+    end
+
+    // tlast pulse counter: exactly one pulse per frame, on the last word
+    always @(posedge clk_i) begin : tlast_count
+        if (result_valid_o && result_ready_i && result_tlast_o) tlast_pulses = tlast_pulses + 1;
+    end
+
+    // Output back-pressure generator: drives result_ready_i. When bp_en is
+    // set (the output-stall test) ready deasserts 1-2 cycles out of every 16;
+    // otherwise it stays high so the FIFO drains freely.
+    reg bp_en = 0;
+    reg [7:0] bp_cnt;
+    always @(posedge clk_i or negedge rst_n_i) begin : bp_gen
+        if (!rst_n_i) begin
+            result_ready_i <= 1'b1;
+            bp_cnt <= 0;
+        end else if (bp_en) begin
+            result_ready_i <= ((bp_cnt % 16) < ((bp_cnt % 2) + 1)) ? 1'b0 : 1'b1;
+            bp_cnt <= bp_cnt + 1;
+        end else begin
+            result_ready_i <= 1'b1;
         end
     end
 
@@ -150,8 +178,10 @@ module tb_accelerator_top;
     endtask
 
     // Task: stream the input image, one pixel per cycle, from the reference
-    // array. When stall_every > 0, deassert pixel_valid_i for 1-3 cycles
-    // after every stall_every-th pixel to exercise the stall handling.
+    // array, presenting each pixel only when the accelerator asks for it and
+    // holding it until it is accepted (the design may stall on input stalls or
+    // output back-pressure). When stall_every > 0, deassert pixel_valid_i for
+    // 1-3 cycles after every stall_every-th accepted pixel.
     task stream_image;
         input integer stall_every;
         integer p;
@@ -160,19 +190,21 @@ module tb_accelerator_top;
             // Wait until the FSM reaches FILL before presenting pixels
             while (state_o !== 2) @(negedge clk_i);
             for (p = 0; p < TOTAL_PIXELS; p = p + 1) begin
-                @(negedge clk_i);
+                // Present pixel p only when the count asks for it, and hold it
+                // until it is accepted (the pixel_counter advances past p)
+                while (dut.pix_addr !== p) @(negedge clk_i);
                 pixel_in_i = ref_img[p];
                 pixel_valid_i = 1;
+                while (dut.pix_addr === p) @(negedge clk_i);
                 if (stall_every && ((p % stall_every) == (stall_every - 1))) begin
-                    // Inject a 1-3 cycle stall after this pixel is accepted
+                    // Inject a 1-3 cycle input stall after this pixel. The
+                    // valid must drop on this same negedge, or the next posedge
+                    // would accept the stale beat as a new pixel.
+                    pixel_valid_i = 0;
                     stall_len = 1 + (p % 3);
-                    repeat (stall_len) begin
-                        @(negedge clk_i);
-                        pixel_valid_i = 0;
-                    end
+                    repeat (stall_len) @(negedge clk_i);
                 end
             end
-            @(negedge clk_i);
             pixel_valid_i = 0;
         end
     endtask
@@ -284,6 +316,7 @@ module tb_accelerator_top;
         for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[w] = 0;
         run_frame(0);
         stream_idx = 0;
+        tlast_pulses = 0;
         stream_image(0);  // no stalls
         wait_done();
         #20;  // settle so the final output writes land before readback
@@ -294,12 +327,17 @@ module tb_accelerator_top;
             $display("FAIL t=%0t: result_valid_o pulses=%0d expected %0d", $time, stream_idx,
                      STREAM_OUT_TOTAL);
         end
+        if (tlast_pulses !== 1) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: tlast pulses=%0d expected 1", $time, tlast_pulses);
+        end
 
         // Directed test 2: random kernel and image, continuous stream
         for (t = 0; t < N * N; t = t + 1) ref_kernel[t] = $urandom;
         for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[w] = $urandom;
         run_frame(0);
         stream_idx = 0;
+        tlast_pulses = 0;
         stream_image(0);
         wait_done();
         #20;
@@ -310,6 +348,10 @@ module tb_accelerator_top;
             $display("FAIL t=%0t: result_valid_o pulses=%0d expected %0d", $time, stream_idx,
                      STREAM_OUT_TOTAL);
         end
+        if (tlast_pulses !== 1) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: tlast pulses=%0d expected 1", $time, tlast_pulses);
+        end
 
         // Directed test 3: random kernel and image with pixel-stream stalls.
         // pixel_valid_i deasserts for 1-3 cycles every 32 pixels; the window
@@ -318,7 +360,8 @@ module tb_accelerator_top;
         for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[w] = $urandom;
         run_frame(3);  // gapped kernel writes too
         stream_idx = 0;
-        stream_image(32);  // stalls every 32 pixels
+        tlast_pulses = 0;
+        stream_image(32);  // input stalls every 32 pixels
         wait_done();
         #20;
         check_stream();
@@ -327,6 +370,37 @@ module tb_accelerator_top;
             errors = errors + 1;
             $display("FAIL t=%0t: stalled result_valid_o pulses=%0d expected %0d", $time,
                      stream_idx, STREAM_OUT_TOTAL);
+        end
+        if (tlast_pulses !== 1) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: tlast pulses=%0d expected 1", $time, tlast_pulses);
+        end
+
+        // Directed test 4: output consumer back-pressure. result_ready_i
+        // deasserts 1-2 cycles out of every 16 mid-frame (bp_gen); the
+        // pipeline must stall without losing results and every output word
+        // must still arrive in order with a single tlast.
+        for (t = 0; t < N * N; t = t + 1) ref_kernel[t] = $urandom;
+        for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[w] = $urandom;
+        run_frame(0);
+        stream_idx = 0;
+        tlast_pulses = 0;
+        bp_en = 1;
+        stream_image(0);  // continuous input; only the output consumer stalls
+        wait_done();
+        bp_en = 0;
+        repeat (100) @(negedge clk_i);  // drain the FIFO backlog
+        check_stream();
+        check_memory();
+        if (stream_idx !== STREAM_OUT_TOTAL) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: back-pressured pulses=%0d expected %0d", $time, stream_idx,
+                     STREAM_OUT_TOTAL);
+        end
+        if (tlast_pulses !== 1) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: back-pressured tlast pulses=%0d expected 1", $time,
+                     tlast_pulses);
         end
 
         // Random stimulus
@@ -337,7 +411,8 @@ module tb_accelerator_top;
             for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[w] = $urandom;
             run_frame(3);
             stream_idx = 0;
-            stream_image(f ? 16 : 64);  // different stall cadences
+            tlast_pulses = 0;
+            stream_image(f ? 16 : 64);  // different input stall cadences
             wait_done();
             #20;
             check_stream();
@@ -346,6 +421,10 @@ module tb_accelerator_top;
                 errors = errors + 1;
                 $display("FAIL t=%0t: result_valid_o pulses=%0d expected %0d", $time,
                          stream_idx, STREAM_OUT_TOTAL);
+            end
+            if (tlast_pulses !== 1) begin
+                errors = errors + 1;
+                $display("FAIL t=%0t: tlast pulses=%0d expected 1", $time, tlast_pulses);
             end
         end
 
