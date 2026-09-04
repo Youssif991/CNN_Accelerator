@@ -20,7 +20,9 @@
 //              window hold, keeping the stream synchronized. result_tlast_o
 //              marks the frame's last word. The MAC-to-result chain is
 //              pipelined (PIPE_STAGES register stages) to raise Fmax; the
-//              result-valid flag shifts with the data.
+//              result-valid flag shifts with the data. The N*N per-tap
+//              multipliers are DSP48E1s (dsp_mult_r4), whose P registers are
+//              pipeline stage 1.
 //
 // Dependencies: conv_fsm (src/control/conv_fsm.v)
 //               pixel_counter (src/control/pixel_counter.v)
@@ -127,19 +129,10 @@ module accelerator_top #(
         end
     endgenerate
 
-    // Pipeline stage 1: register the MAC products (holds while the output consumer is stalled so no result is lost)
-    generate
-        if (PIPE_STAGES >= 1) begin : gen_pipe_products
-            reg [N*N*PROD_WIDTH-1:0] products_p1;
-            always @(posedge clk_i or negedge rst_n_i) begin : stage
-                if (!rst_n_i) products_p1 <= 0;
-                else if (!output_stall) products_p1 <= products;
-            end
-            assign products_to_tree = products_p1;
-        end else begin : gen_no_pipe_products
-            assign products_to_tree = products;
-        end
-    endgenerate
+    // Pipeline stage 1 is inside the MAC array: each dsp_mult_r4 tap maps to a
+    // DSP48E1 whose P register (clock-enabled by !output_stall) holds the
+    // products, so no explicit product register is needed here.
+    assign products_to_tree = products;
 
     // Pipeline stage 2: register the adder-tree sum (holds while stalled)
     generate
@@ -294,9 +287,11 @@ module accelerator_top #(
         .COEFF_WIDTH  (COEFF_WIDTH),
         .PROD_WIDTH   (PROD_WIDTH)
     ) u_mac_array (
-        .window_i    (window),
-        .kernel_i    (kernel),
-        .products_o  (products)
+        .clk_i      (clk_i),
+        .en_i       (!output_stall),
+        .window_i   (window),
+        .kernel_i   (kernel),
+        .products_o (products)
     );
 
     adder_tree #(
