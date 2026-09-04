@@ -6,11 +6,13 @@
 // Design Name: CNN Convolution Datapath - Saturate/Round Unit Testbench
 // Module Name: tb_sat_round_unit
 // Tool Versions: Vivado 2025.2
-// Description: Self-checking testbench for the saturate/round unit. A golden
-//              reference models round-half-up truncation and clamping with
-//              integer arithmetic (arithmetic shift vs the DUT's part-select
-//              and pre-truncation bounds); the checker compares both the
-//              rounding and the plain-truncation instances after a #1 settle.
+// Description: Self-checking testbench for the saturate/round unit with the
+//              optional ReLU activation. A golden reference models ReLU
+//              (clamp negatives to zero), round-half-up truncation, and
+//              clamping with integer arithmetic (arithmetic shift vs the
+//              DUT's part-select and pre-truncation bounds); the checker
+//              compares both the rounding and the plain-truncation instances
+//              after a #1 settle. Exercises both relu_en_i settings.
 //
 // Dependencies: sat_round_unit (src/datapath/sat_round_unit.v)
 //
@@ -32,6 +34,7 @@ module tb_sat_round_unit;
 
     // DUT interconnect
     reg signed [SUM_WIDTH-1:0] sum_i;
+    reg relu_en_i;
     wire signed [OUT_WIDTH-1:0] result_o;        // rounding enabled
     wire signed [OUT_WIDTH-1:0] result_o_trunc;  // plain truncation
 
@@ -50,6 +53,7 @@ module tb_sat_round_unit;
         .ROUND_ENABLE(1)
     ) dut (
         .sum_i(sum_i),
+        .relu_en_i(relu_en_i),
         .result_o(result_o)
     );
 
@@ -59,17 +63,21 @@ module tb_sat_round_unit;
         .ROUND_ENABLE(0)
     ) dut_trunc (
         .sum_i(sum_i),
+        .relu_en_i(relu_en_i),
         .result_o(result_o_trunc)
     );
 
     // Golden reference (rounding mode)
-    // Independent integer model: add half the dropped LSBs, arithmetic-shift
-    // (floor for negatives - same as the DUT's part-select), then clamp.
+    // Independent integer model: optional ReLU (clamp negatives to zero), add
+    // half the dropped LSBs, arithmetic-shift (floor for negatives - same as
+    // the DUT's part-select), then clamp.
+    reg signed [SUM_WIDTH-1:0] ref_sum;
     always @(*) begin : reference
+        ref_sum = (relu_en_i && (sum_i < 0)) ? 0 : sum_i;
         // Round: add half the dropped LSBs into the signed accumulator, then
         // arithmetic-shift (floor for negatives - same as the DUT's
         // part-select), then clamp.
-        expected_shifted = sum_i + (1 << (BITS_DROPPED-1));
+        expected_shifted = ref_sum + (1 << (BITS_DROPPED-1));
         expected_shifted = expected_shifted >>> BITS_DROPPED;
         if (expected_shifted > SAT_MAX) begin
             expected_result = SAT_MAX;
@@ -80,9 +88,10 @@ module tb_sat_round_unit;
         end
     end
 
-    // Golden reference (truncation mode): no rounding bias.
+    // Golden reference (truncation mode): optional ReLU, then no rounding bias.
     always @(*) begin : reference_trunc
-        expected_shifted_trunc = sum_i >>> BITS_DROPPED;
+        ref_sum = (relu_en_i && (sum_i < 0)) ? 0 : sum_i;
+        expected_shifted_trunc = ref_sum >>> BITS_DROPPED;
         if (expected_shifted_trunc > SAT_MAX) begin
             expected_result_trunc = SAT_MAX;
         end else if (expected_shifted_trunc < SAT_MIN) begin
@@ -112,6 +121,7 @@ module tb_sat_round_unit;
     initial begin : test
         // Drive all inputs low
         sum_i = 0;
+        relu_en_i = 0;
         #10;
 
         // Directed test 1: exact multiples of 2^BITS_DROPPED (no rounding)
@@ -148,12 +158,32 @@ module tb_sat_round_unit;
         sum_i = -(1 << 21);  // min 22-bit negative -> -32768
         #10;
 
+        // Directed test 4: ReLU clamps every negative sum to zero
+        relu_en_i = 1;
+        sum_i = -22'sd1;  // would be -0.xx -> 0
+        #10;
+        sum_i = -22'sd33;  // would round to -1 -> 0
+        #10;
+        sum_i = -22'sd32768 << 6;  // min 22-bit -> 0
+        #10;
+        sum_i = -22'sd63;  // -> 0
+        #10;
+        // Positives are unchanged by ReLU
+        sum_i = 22'sd100;
+        #10;
+        sum_i = (22'sd32767 << 6) + 1;  // still saturates to +32767
+        #10;
+        relu_en_i = 0;
+
         // Random stimulus
-        // Stress-test with random 22-bit sums (full signed range).
+        // Stress-test with random 22-bit sums (full signed range); toggle
+        // ReLU every few vectors.
         for (i = 0; i < NUM_TESTS; i = i + 1) begin
             sum_i = $urandom();
+            relu_en_i = (i % 4) < 2;
             #10;
         end
+        relu_en_i = 0;
 
         // Allow the last transaction to settle, then report
         #20;

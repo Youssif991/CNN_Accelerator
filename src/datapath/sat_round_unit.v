@@ -6,10 +6,12 @@
 // Design Name: CNN Convolution Datapath - Saturate/Round Unit
 // Module Name: sat_round_unit
 // Tool Versions: Vivado 2025.2
-// Description: Saturation, rounding, and truncation of the convolution
-//              result to the >=16-bit signed output precision. Rounding is
-//              round-half-up (add half the dropped LSBs, then truncate);
-//              overflow and underflow clamp to the signed output range.
+// Description: Saturation, rounding, truncation, and the optional ReLU
+//              activation of the convolution result to the >=16-bit signed
+//              output precision. ReLU (relu_en_i) clamps negative sums to
+//              zero before rounding; rounding is round-half-up (add half the
+//              dropped LSBs, then truncate); overflow and underflow clamp to
+//              the signed output range.
 //
 // Dependencies: none (leaf module)
 //
@@ -25,6 +27,7 @@ module sat_round_unit #(
     parameter ROUND_ENABLE = 1  // 1 = round-half-up, 0 = plain truncation
 ) (
     input  wire signed [SUM_WIDTH-1:0] sum_i,
+    input  wire relu_en_i,  // ReLU enable: clamp negative sums to zero
     output wire signed [OUT_WIDTH-1:0] result_o
 );
 
@@ -35,13 +38,22 @@ module sat_round_unit #(
     localparam SAT_MAX_EXT  = SAT_MAX << BITS_DROPPED;   // pre-truncation bound
     localparam SAT_MIN_EXT  = SAT_MIN << BITS_DROPPED;   // pre-truncation bound
 
+    reg signed [SUM_WIDTH-1:0] sum_relu;  // ReLU-clamped sum
     reg signed [SUM_WIDTH-1:0] rounded;    // biased sum (pre-truncation)
     reg signed [OUT_WIDTH-1:0] truncated;  // top OUT_WIDTH bits of the rounded sum
     reg signed [OUT_WIDTH-1:0] result_d;
 
-    always @(*) begin : round_trunc_sat
+    always @(*) begin : relu_round_sat
+        // Optional ReLU: clamp negative sums to zero before rounding. For a
+        // quantized output this is equivalent to max(sum, 0) on the result,
+        // since a negative sum can never round above zero.
+        if (relu_en_i && (sum_i < 0)) begin
+            sum_relu = {SUM_WIDTH{1'b0}};
+        end else begin
+            sum_relu = sum_i;
+        end
         // Round: add half of the dropped LSBs (round-half-up) unless disabled.
-        rounded = sum_i + (ROUND_ENABLE ? ROUND_BIAS : 0);
+        rounded = sum_relu + (ROUND_ENABLE ? ROUND_BIAS : 0);
         // Truncate: keep the top OUT_WIDTH bits (arithmetic for two's
         // complement - rounds toward minus infinity on the dropped bits).
         truncated = rounded[SUM_WIDTH-1 -: OUT_WIDTH];

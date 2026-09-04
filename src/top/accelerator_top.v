@@ -22,7 +22,9 @@
 //              pipelined (PIPE_STAGES register stages) to raise Fmax; the
 //              result-valid flag shifts with the data. The N*N per-tap
 //              multipliers are DSP48E1s (dsp_mult_r4), whose P registers are
-//              pipeline stage 1.
+//              pipeline stage 1. An optional ReLU activation (relu_en_i,
+//              host-set per frame) clamps negative outputs to zero before
+//              rounding in the saturate/round unit.
 //
 // Dependencies: conv_fsm (src/control/conv_fsm.v)
 //               pixel_counter (src/control/pixel_counter.v)
@@ -60,6 +62,7 @@ module accelerator_top #(
     input wire pixel_valid_i,  // Pixel valid (deasserted = stall)
     input wire kernel_wr_valid_i,  // Kernel coefficient write valid (host-paced)
     input wire [COEFF_WIDTH-1:0] kernel_wr_data_i,  // Kernel coefficient data
+    input wire relu_en_i,  // ReLU enable (host-set per frame: clamp negatives to zero)
     output wire busy_o,  // Frame in progress
     output wire done_o,  // Frame complete
     output wire [2:0] state_o,  // FSM state (observability)
@@ -308,8 +311,9 @@ module accelerator_top #(
         .OUT_WIDTH    (OUT_WIDTH),
         .ROUND_ENABLE (ROUND_ENABLE)
     ) u_sat_round_unit (
-        .sum_i    (sum_to_sat),
-        .result_o (result)
+        .sum_i     (sum_to_sat),
+        .relu_en_i (relu_en_i),
+        .result_o  (result)
     );
 
 endmodule
