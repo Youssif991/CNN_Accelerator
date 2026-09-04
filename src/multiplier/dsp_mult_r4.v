@@ -45,7 +45,7 @@ module dsp_mult_r4 #(
     input wire signed [COEFF_WIDTH-1:0] coeff_i,  // The coefficient to multiply by
     output wire signed [PROD_WIDTH-1:0] prod_o  // The product output (registered)
 );
-.
+
     wire signed [24:0] a_op = {{(25 - PIXEL_WIDTH) {1'b0}}, pixel_i};
     wire signed [17:0] b_op = {{(18 - COEFF_WIDTH) {coeff_i[COEFF_WIDTH-1]}}, coeff_i};
     (* use_dsp = "yes" *) wire signed [42:0] product = a_op * b_op;
