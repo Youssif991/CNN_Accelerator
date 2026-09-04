@@ -17,6 +17,8 @@
 //              writes with gaps, pixel-stream stalls (pixel_valid_i deasserted
 //              mid-frame) and output back-pressure (result_ready_i deasserted)
 //              which must not corrupt the sliding window or the output stream.
+//              The optional ReLU activation (relu_en_i) is exercised with
+//              frames run both enabled and disabled.
 //
 // Dependencies: accelerator_top (src/top/accelerator_top.v)
 //
@@ -55,6 +57,7 @@ module tb_accelerator_top;
     reg [PIXEL_WIDTH-1:0] pixel_in_i;
     reg kernel_wr_valid_i;
     reg [COEFF_WIDTH-1:0] kernel_wr_data_i;
+    reg relu_en_i;
     wire busy_o;
     wire done_o;
     wire [2:0] state_o;
@@ -98,6 +101,7 @@ module tb_accelerator_top;
         .pixel_valid_i    (pixel_valid_i),
         .kernel_wr_valid_i(kernel_wr_valid_i),
         .kernel_wr_data_i (kernel_wr_data_i),
+        .relu_en_i        (relu_en_i),
         .busy_o           (busy_o),
         .done_o           (done_o),
         .state_o          (state_o),
@@ -232,6 +236,8 @@ module tb_accelerator_top;
                     ref_sum = ref_sum + $signed(
                         {1'b0, ref_img[a + (t / N) * IMAGE_WIDTH + t % N]}) * ref_kernel[t];
                 end
+                // Optional ReLU: clamp negative sums to zero, then round
+                if (relu_en_i && (ref_sum < 0)) ref_sum = 0;
                 ref_shifted = ref_sum + (1 << (BITS_DROPPED - 1));
                 ref_shifted = ref_shifted >>> BITS_DROPPED;
                 if (ref_shifted > SAT_MAX) begin
@@ -258,6 +264,7 @@ module tb_accelerator_top;
         pixel_in_i = 0;
         kernel_wr_valid_i = 0;
         kernel_wr_data_i = 0;
+        relu_en_i = 0;
         rst_n_i = 0;
 
         @(negedge clk_i);
@@ -284,9 +291,10 @@ module tb_accelerator_top;
             $display("FAIL t=%0t: tlast pulses=%0d expected 1", $time, tlast_pulses);
         end
 
-        // Directed test 2: random kernel and image, continuous stream
+        // Directed test 2: random kernel and image, continuous stream, ReLU on
         for (t = 0; t < N * N; t = t + 1) ref_kernel[t] = $urandom;
         for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[w] = $urandom;
+        relu_en_i = 1;  // exercise the ReLU activation this frame
         run_frame(0);
         stream_idx = 0;
         tlast_pulses = 0;
@@ -307,6 +315,7 @@ module tb_accelerator_top;
         // Directed test 3: random kernel and image with pixel-stream stalls.
         // pixel_valid_i deasserts for 1-3 cycles every 32 pixels; the window
         // and counters must stay synchronized and all outputs must match.
+        // ReLU stays enabled from test 2.
         for (t = 0; t < N * N; t = t + 1) ref_kernel[t] = $urandom;
         for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[w] = $urandom;
         run_frame(3);  // gapped kernel writes too
@@ -329,9 +338,10 @@ module tb_accelerator_top;
         // Directed test 4: output consumer back-pressure. result_ready_i
         // deasserts 1-2 cycles out of every 16 mid-frame (bp_gen); the
         // pipeline must stall without losing results and every output word
-        // must still arrive in order with a single tlast.
+        // must still arrive in order with a single tlast. ReLU off this frame.
         for (t = 0; t < N * N; t = t + 1) ref_kernel[t] = $urandom;
         for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[w] = $urandom;
+        relu_en_i = 0;
         run_frame(0);
         stream_idx = 0;
         tlast_pulses = 0;
@@ -358,6 +368,7 @@ module tb_accelerator_top;
         for (f = 0; f < 2; f = f + 1) begin
             for (t = 0; t < N * N; t = t + 1) ref_kernel[t] = $urandom;
             for (w = 0; w < TOTAL_PIXELS; w = w + 1) ref_img[w] = $urandom;
+            relu_en_i = (f == 1);  // ReLU on for the second random frame
             run_frame(3);
             stream_idx = 0;
             tlast_pulses = 0;
