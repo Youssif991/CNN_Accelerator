@@ -11,12 +11,12 @@
 //              streams the input image one 8-bit pixel per cycle through
 //              pixel_in_i/pixel_valid_i and compares every output against an
 //              independent triple-loop convolution golden model (with
-//              round-half-up and saturation). Results are checked on both the
-//              streaming output port (result_o/result_valid_o) and the output
-//              memory readback. Covers an all-zero frame, randomized frames,
-//              host-paced kernel writes with gaps, and pixel-stream stalls
-//              (pixel_valid_i deasserted mid-frame) which must not corrupt the
-//              sliding window or the output stream.
+//              round-half-up and saturation). Results are checked on the
+//              streaming output port (result_o / result_valid_o / tlast).
+//              Covers an all-zero frame, randomized frames, host-paced kernel
+//              writes with gaps, pixel-stream stalls (pixel_valid_i deasserted
+//              mid-frame) and output back-pressure (result_ready_i deasserted)
+//              which must not corrupt the sliding window or the output stream.
 //
 // Dependencies: accelerator_top (src/top/accelerator_top.v)
 //
@@ -38,12 +38,8 @@ module tb_accelerator_top;
     localparam PIPE_STAGES = 2;  // must match the accelerator top default
     localparam TOTAL_PIXELS = IMAGE_WIDTH * IMAGE_HEIGHT;
     localparam PIX_ADDR_WIDTH = $clog2(TOTAL_PIXELS);
-    localparam OUT_IMAGE_WIDTH = IMAGE_WIDTH - N + 1;
-    localparam OUT_IMAGE_HEIGHT = IMAGE_HEIGHT - N + 1;
-    localparam OUT_TOTAL = OUT_IMAGE_WIDTH * OUT_IMAGE_HEIGHT;
-    localparam OUT_ADDR_WIDTH = $clog2(OUT_TOTAL);
     // Streamed outputs per frame: every accepted pixel past the fill rows
-    // (includes the N-1 border windows per row that the memory check skips)
+    // (includes the N-1 border windows per row, which the host discards)
     localparam STREAM_OUT_TOTAL = IMAGE_WIDTH * (IMAGE_HEIGHT - N + 1) - (N - 1);
     localparam PROD_WIDTH = PIXEL_WIDTH + COEFF_WIDTH + 2;
     localparam SUM_WIDTH = PROD_WIDTH + $clog2(N * N);
@@ -59,11 +55,9 @@ module tb_accelerator_top;
     reg [PIXEL_WIDTH-1:0] pixel_in_i;
     reg kernel_wr_valid_i;
     reg [COEFF_WIDTH-1:0] kernel_wr_data_i;
-    reg [OUT_ADDR_WIDTH-1:0] res_rd_addr_i;
     wire busy_o;
     wire done_o;
     wire [2:0] state_o;
-    wire [OUT_WIDTH-1:0] res_rd_data_o;
     reg result_ready_i;
     wire result_valid_o;
     wire [OUT_WIDTH-1:0] result_o;
@@ -104,11 +98,9 @@ module tb_accelerator_top;
         .pixel_valid_i    (pixel_valid_i),
         .kernel_wr_valid_i(kernel_wr_valid_i),
         .kernel_wr_data_i (kernel_wr_data_i),
-        .res_rd_addr_i    (res_rd_addr_i),
         .busy_o           (busy_o),
         .done_o           (done_o),
         .state_o          (state_o),
-        .res_rd_data_o    (res_rd_data_o),
         .result_valid_o   (result_valid_o),
         .result_o         (result_o),
         .result_tlast_o   (result_tlast_o),
@@ -258,44 +250,6 @@ module tb_accelerator_top;
         end
     endtask
 
-    // Task: read back all outputs of one frame and compare with the golden
-    // triple-loop convolution model (in-image outputs only).
-    task check_memory;
-        integer a;  // output address
-        integer r;  // output row
-        integer c;  // output col
-        begin
-            for (a = 0; a < OUT_TOTAL; a = a + 1) begin
-                r = a / OUT_IMAGE_WIDTH;
-                c = a % OUT_IMAGE_WIDTH;
-                ref_sum = 0;
-                for (t = 0; t < N * N; t = t + 1) begin
-                    ref_sum = ref_sum + $signed(
-                        {1'b0, ref_img[(r + t / N) * IMAGE_WIDTH + c + t % N]}) * ref_kernel[t];
-                end
-                ref_shifted = ref_sum + (1 << (BITS_DROPPED - 1));
-                ref_shifted = ref_shifted >>> BITS_DROPPED;
-                if (ref_shifted > SAT_MAX) begin
-                    ref_out = SAT_MAX;
-                end else if (ref_shifted < SAT_MIN) begin
-                    ref_out = SAT_MIN;
-                end else begin
-                    ref_out = $signed(ref_shifted[OUT_WIDTH-1:0]);
-                end
-                // Memory readback check
-                @(negedge clk_i);
-                res_rd_addr_i = a;
-                @(negedge clk_i);
-                @(negedge clk_i);
-                if (res_rd_data_o !== ref_out) begin
-                    errors = errors + 1;
-                    $display("FAIL t=%0t: out[%0d] = %0d expected %0d", $time, a,
-                             res_rd_data_o, ref_out);
-                end
-            end
-        end
-    endtask
-
     // Test procedure
     initial begin : test
         // Drive all inputs low and assert reset
@@ -304,7 +258,6 @@ module tb_accelerator_top;
         pixel_in_i = 0;
         kernel_wr_valid_i = 0;
         kernel_wr_data_i = 0;
-        res_rd_addr_i = 0;
         rst_n_i = 0;
 
         @(negedge clk_i);
@@ -319,9 +272,8 @@ module tb_accelerator_top;
         tlast_pulses = 0;
         stream_image(0);  // no stalls
         wait_done();
-        #20;  // settle so the final output writes land before readback
+        #20;  // let the final output words drain through the FIFO
         check_stream();
-        check_memory();
         if (stream_idx !== STREAM_OUT_TOTAL) begin
             errors = errors + 1;
             $display("FAIL t=%0t: result_valid_o pulses=%0d expected %0d", $time, stream_idx,
@@ -342,7 +294,6 @@ module tb_accelerator_top;
         wait_done();
         #20;
         check_stream();
-        check_memory();
         if (stream_idx !== STREAM_OUT_TOTAL) begin
             errors = errors + 1;
             $display("FAIL t=%0t: result_valid_o pulses=%0d expected %0d", $time, stream_idx,
@@ -365,7 +316,6 @@ module tb_accelerator_top;
         wait_done();
         #20;
         check_stream();
-        check_memory();
         if (stream_idx !== STREAM_OUT_TOTAL) begin
             errors = errors + 1;
             $display("FAIL t=%0t: stalled result_valid_o pulses=%0d expected %0d", $time,
@@ -391,7 +341,6 @@ module tb_accelerator_top;
         bp_en = 0;
         repeat (100) @(negedge clk_i);  // drain the FIFO backlog
         check_stream();
-        check_memory();
         if (stream_idx !== STREAM_OUT_TOTAL) begin
             errors = errors + 1;
             $display("FAIL t=%0t: back-pressured pulses=%0d expected %0d", $time, stream_idx,
@@ -416,7 +365,6 @@ module tb_accelerator_top;
             wait_done();
             #20;
             check_stream();
-            check_memory();
             if (stream_idx !== STREAM_OUT_TOTAL) begin
                 errors = errors + 1;
                 $display("FAIL t=%0t: result_valid_o pulses=%0d expected %0d", $time,
@@ -472,8 +420,8 @@ module tb_accelerator_top;
 
     // Live monitor: prints signal values on every change
     initial begin : monitor
-        $monitor("Time=%0t | state=%0d busy=%b done=%b | res_rd_addr=%0d res_rd_data=%0d", $time,
-                 state_o, busy_o, done_o, res_rd_addr_i, res_rd_data_o);
+        $monitor("Time=%0t | state=%0d busy=%b done=%b | out words=%0d", $time, state_o, busy_o,
+                 done_o, stream_idx);
     end
 
     // VCD dump for waveform debugging

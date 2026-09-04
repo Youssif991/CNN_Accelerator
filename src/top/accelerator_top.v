@@ -8,27 +8,28 @@
 // Tool Versions: Vivado 2025.2
 // Description: Top level integrating the convolution datapath (line-buffer
 //              bank, window array, MAC array, adder tree, saturate/round),
-//              the frame controller, and the output address generator with
-//              the output feature-map memory. The host loads the kernel
-//              (host-paced, one coefficient per valid pulse), then pulses
-//              start_i; the input image streams in one 8-bit pixel per cycle
-//              (pixel_in_i / pixel_valid_i) and the accelerator produces one
-//              output pixel per cycle (result_o / result_valid_o). A
-//              deasserted pixel_valid_i stalls the stream: the counters and
-//              the sliding window hold, so the pipeline stays synchronized.
-//              Results are also written to the output block RAM for host
-//              readback. The MAC-to-result chain is pipelined (PIPE_STAGES
-//              register stages) to raise Fmax; the result-valid flag shifts
-//              with the data.
+//              the frame controller, and the pixel counter with the streaming
+//              output FIFO. The host loads the kernel (host-paced, one
+//              coefficient per valid pulse), then pulses start_i; the input
+//              image streams in one 8-bit pixel per cycle (pixel_in_i /
+//              pixel_valid_i) and the accelerator produces one output word per
+//              accepted pixel (result_o / result_valid_o, gap-free, border
+//              windows included). A deasserted pixel_valid_i stalls the stream
+//              and a full output FIFO (result_ready_i deasserted) freezes the
+//              pipeline, so no result is lost; the counters and the sliding
+//              window hold, keeping the stream synchronized. result_tlast_o
+//              marks the frame's last word. The MAC-to-result chain is
+//              pipelined (PIPE_STAGES register stages) to raise Fmax; the
+//              result-valid flag shifts with the data.
 //
 // Dependencies: conv_fsm (src/control/conv_fsm.v)
 //               pixel_counter (src/control/pixel_counter.v)
-//               addr_gen_out (src/control/addr_gen_out.v)
 //               line_buffer_bank (src/datapath/line_buffer_bank.v)
 //               window_array (src/datapath/window_array.v)
 //               kernel_reg_bank (src/datapath/kernel_reg_bank.v)
 //               mac_array (src/datapath/mac_array.v)
 //               adder_tree (src/datapath/adder_tree.v)
+//               output_fifo (src/datapath/output_fifo.v)
 //               sat_round_unit (src/datapath/sat_round_unit.v)
 //
 // Revision:
@@ -47,10 +48,6 @@ module accelerator_top #(
     parameter ROUND_ENABLE = 1,  // Round-half-up before truncation
     parameter PIPE_STAGES = 2,  // Pipeline stages after the window array
     parameter PIX_ADDR_WIDTH = $clog2(IMAGE_WIDTH * IMAGE_HEIGHT),
-    parameter OUT_IMAGE_WIDTH = IMAGE_WIDTH - N + 1,
-    parameter OUT_IMAGE_HEIGHT = IMAGE_HEIGHT - N + 1,
-    parameter OUT_ADDR_WIDTH = $clog2(OUT_IMAGE_WIDTH * OUT_IMAGE_HEIGHT),
-    parameter OUT_TOTAL = OUT_IMAGE_WIDTH * OUT_IMAGE_HEIGHT,  // output memory depth
     parameter PROD_WIDTH = PIXEL_WIDTH + COEFF_WIDTH + 2,
     parameter SUM_WIDTH = PROD_WIDTH + $clog2(N*N)
 ) (
@@ -61,11 +58,9 @@ module accelerator_top #(
     input wire pixel_valid_i,  // Pixel valid (deasserted = stall)
     input wire kernel_wr_valid_i,  // Kernel coefficient write valid (host-paced)
     input wire [COEFF_WIDTH-1:0] kernel_wr_data_i,  // Kernel coefficient data
-    input wire [OUT_ADDR_WIDTH-1:0] res_rd_addr_i,  // Output read address
     output wire busy_o,  // Frame in progress
     output wire done_o,  // Frame complete
     output wire [2:0] state_o,  // FSM state (observability)
-    output wire [OUT_WIDTH-1:0] res_rd_data_o,  // Output read data
     output wire result_valid_o,  // Output word available (FIFO not empty)
     output wire [OUT_WIDTH-1:0] result_o,  // Output data (FIFO read)
     output wire result_tlast_o,  // Last output word of the frame
@@ -76,7 +71,6 @@ module accelerator_top #(
     // Control-unit interconnect
     wire [PIX_ADDR_WIDTH-1:0] pix_addr;
     wire pix_last;
-    wire [OUT_ADDR_WIDTH-1:0] out_addr;
     wire kernel_we;
     wire [$clog2(N*N)-1:0] kernel_addr;
     wire shift_valid;
@@ -97,8 +91,6 @@ module accelerator_top #(
     wire [N*N*PROD_WIDTH-1:0] products_to_tree;
     wire signed [SUM_WIDTH-1:0] sum_to_sat;
     wire result_valid_p;  // result valid shifted with the pipeline data
-    wire col_valid;  // current pixel is in an in-image output column (>= N-1)
-    wire col_valid_p;  // col_valid shifted with the pipeline data
     wire last_p;  // frame-last flag shifted with the pipeline data
     wire output_stall;  // a result is ready but the output FIFO cannot accept it
     wire fifo_wr_ready;  // output FIFO write ready (not full)
@@ -184,54 +176,6 @@ module accelerator_top #(
         end
     endgenerate
 
-    // Column-valid flag
-    assign col_valid = (pix_addr % IMAGE_WIDTH) >= (N-1);
-
-    // Register col_valid (extra cycle to match result_valid_p; holds while the pipeline is stalled)
-    reg col_valid_q;
-    always @(posedge clk_i or negedge rst_n_i) begin : col_valid_reg
-        if (!rst_n_i) col_valid_q <= 1'b0;
-        else if (!output_stall) col_valid_q <= col_valid;
-    end
-
-    generate
-        if (PIPE_STAGES == 1) begin : gen_pipe_col_valid1
-            reg col_valid_p1;
-            always @(posedge clk_i or negedge rst_n_i) begin : stage
-                if (!rst_n_i) col_valid_p1 <= 1'b0;
-                else if (!output_stall) col_valid_p1 <= col_valid_q;
-            end
-            assign col_valid_p = col_valid_p1;
-        end else if (PIPE_STAGES >= 2) begin : gen_pipe_col_validn
-            reg [PIPE_STAGES-1:0] col_valid_p1;
-            always @(posedge clk_i or negedge rst_n_i) begin : stage
-                if (!rst_n_i) col_valid_p1 <= 0;
-                else if (!output_stall) col_valid_p1 <= {col_valid_p1[PIPE_STAGES-2:0], col_valid_q};
-            end
-            assign col_valid_p = col_valid_p1[PIPE_STAGES-1];
-        end else begin : gen_no_pipe_col_valid
-            assign col_valid_p = col_valid_q;
-        end
-    endgenerate
-
-    // Output storage: 1 block RAM (simple dual-port, registered read)
-    reg [OUT_WIDTH-1:0] res_mem [0:OUT_TOTAL-1];
-    reg [OUT_WIDTH-1:0] res_rd_data_q;
-
-    always @(posedge clk_i) begin : res_write
-        // Fire once per result (the write enable is a pulse only while the
-        // pipeline advances, so a stalled result is not written repeatedly)
-        if (result_valid_p && col_valid_p && !output_stall) res_mem[out_addr] <= result;
-    end
-
-    always @(posedge clk_i) begin : res_read
-        res_rd_data_q <= res_mem[res_rd_addr_i];
-    end
-
-    assign res_rd_data_o = res_rd_data_q;
-
-    assign ready_o = ready;
-
     // Output FIFO: decouples the pipeline from the consumer. The write side
     // accepts the gap-free result stream (border windows included); when it
     // is full the pipeline stalls (output_stall). The read side is FWFT and
@@ -285,7 +229,7 @@ module accelerator_top #(
         .state_o         (state_o)
     );
 
-    // Pixel position counter (input) and output address generator
+    // Pixel position counter (input)
     pixel_counter #(
         .IMAGE_WIDTH (IMAGE_WIDTH),
         .IMAGE_HEIGHT(IMAGE_HEIGHT),
@@ -297,19 +241,6 @@ module accelerator_top #(
         .rst_count_i (rst_count),
         .addr_o      (pix_addr),
         .last_o      (pix_last)
-    );
-
-    addr_gen_out #(
-        .OUT_IMAGE_WIDTH (OUT_IMAGE_WIDTH),
-        .OUT_IMAGE_HEIGHT(OUT_IMAGE_HEIGHT),
-        .ADDR_WIDTH      (OUT_ADDR_WIDTH)
-    ) u_out (
-        .clk_i       (clk_i),
-        .rst_n_i     (rst_n_i),
-        .en_i        (result_valid_p && col_valid_p && !output_stall),
-        .rst_count_i (rst_count),
-        .addr_o      (out_addr),
-        .last_o      ()
     );
 
     // Datapath

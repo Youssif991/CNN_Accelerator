@@ -7,18 +7,17 @@
 // Module Name: tb_conv_fsm
 // Tool Versions: Vivado 2025.2
 // Description: Self-checking testbench for the convolution frame controller
-//              wired together with the input/output address generators (the
-//              control unit as integrated in the accelerator top). A golden
-//              reference models the frame phases with its own shift counter
-//              (independent of the DUT's address generators); the checker
-//              compares every FSM and address-generator output on negedge.
-//              Covers reset, a full frame with exact cycle counts, a second
-//              frame, pixel-stream stalls (pixel_valid_i deasserted), and
-//              randomized start-request stimulus.
+//              wired together with the input pixel counter (the control unit
+//              as integrated in the accelerator top). A golden reference
+//              models the frame phases with its own shift counter (independent
+//              of the DUT's counter); the checker compares every FSM output on
+//              negedge. Covers reset, a full frame with exact cycle counts, a
+//              second frame, pixel-stream stalls (pixel_valid_i deasserted),
+//              output back-pressure (output_stall_i), and randomized start-
+//              request stimulus.
 //
 // Dependencies: conv_fsm (src/control/conv_fsm.v)
 //               pixel_counter (src/control/pixel_counter.v)
-//               addr_gen_out (src/control/addr_gen_out.v)
 //
 // Revision:
 // Revision 0.01 - File Created
@@ -36,12 +35,8 @@ module tb_conv_fsm;
     localparam PIX_ADDR_WIDTH = $clog2(IMAGE_WIDTH * IMAGE_HEIGHT);
     localparam FILL_CYCLES = (N-1) * IMAGE_WIDTH + (N-1);
     localparam TOTAL_PIXELS = IMAGE_WIDTH * IMAGE_HEIGHT;
-    localparam OUT_IMAGE_WIDTH = IMAGE_WIDTH - N + 1;
-    localparam OUT_IMAGE_HEIGHT = IMAGE_HEIGHT - N + 1;
-    localparam OUT_TOTAL = OUT_IMAGE_WIDTH * OUT_IMAGE_HEIGHT;
-    localparam OUT_ADDR_WIDTH = $clog2(OUT_TOTAL);
     // Streamed outputs per frame: every accepted pixel past the fill rows
-    // (includes the N-1 border windows per row that the memory path skips)
+    // (includes the N-1 border windows per row)
     localparam STREAM_OUT_TOTAL = IMAGE_WIDTH * (IMAGE_HEIGHT - N + 1) - (N - 1);
     localparam STATE_WIDTH = 3;
     localparam NUM_TESTS = 300;  // random stimulus cycles
@@ -67,8 +62,6 @@ module tb_conv_fsm;
     // Address-generator interconnect (as wired in the accelerator top)
     wire [PIX_ADDR_WIDTH-1:0] pix_addr;
     wire pix_last;
-    wire [OUT_ADDR_WIDTH-1:0] out_addr;
-    wire out_last;
 
     // Test infrastructure
     integer i;  // test loop counter
@@ -123,19 +116,6 @@ module tb_conv_fsm;
         .last_o      (pix_last)
     );
 
-    addr_gen_out #(
-        .OUT_IMAGE_WIDTH (OUT_IMAGE_WIDTH),
-        .OUT_IMAGE_HEIGHT(OUT_IMAGE_HEIGHT),
-        .ADDR_WIDTH      (OUT_ADDR_WIDTH)
-    ) u_out (
-        .clk_i       (clk_i),
-        .rst_n_i     (rst_n_i),
-        .en_i        (result_valid_o),
-        .rst_count_i (rst_count_o),
-        .addr_o      (out_addr),
-        .last_o      (out_last)
-    );
-
     // Clock generation: free-running 20 ns period (50 MHz)
     initial begin : clock
         clk_i = 0;
@@ -156,7 +136,6 @@ module tb_conv_fsm;
     reg [$clog2(N*N)-1:0] ref_load_q;  // kernel load index
     reg [1:0] ref_exit_q;  // compute-exit countdown
     reg expected_result_valid;
-    reg [OUT_ADDR_WIDTH-1:0] expected_out_cnt_q;
 
     always @(posedge clk_i or negedge rst_n_i) begin : reference
         if (!rst_n_i) begin
@@ -165,7 +144,6 @@ module tb_conv_fsm;
             ref_load_q <= 0;
             ref_exit_q <= 0;
             expected_result_valid <= 1'b0;
-            expected_out_cnt_q <= 0;
         end else begin
             // Shift counter: restart at frame start, count only accepted pixels
             // (a deasserted pixel_valid_i stalls the stream without shifting)
@@ -206,14 +184,6 @@ module tb_conv_fsm;
                 PH_DONE: ref_phase_q <= PH_IDLE;
                 default: ref_phase_q <= PH_IDLE;
             endcase
-
-            // Output counter: reset at frame start, count valid results
-            if (rst_count_o) begin
-                expected_out_cnt_q <= 0;
-            end else if (result_valid_o) begin
-                expected_out_cnt_q <= (expected_out_cnt_q == OUT_TOTAL-1) ?
-                    0 : expected_out_cnt_q + 1;
-            end
         end
     end
 
@@ -232,7 +202,6 @@ module tb_conv_fsm;
     wire expected_rst_count = (ref_phase_q == PH_LOAD);
     wire expected_busy = (ref_phase_q != PH_IDLE) && (ref_phase_q != PH_DONE);
     wire expected_done = (ref_phase_q == PH_DONE);
-    wire expected_out_last = result_valid_o && (expected_out_cnt_q == OUT_TOTAL-1);
 
     // Checker
     // Compares every control output on negedge, after the posedge capture
@@ -279,16 +248,6 @@ module tb_conv_fsm;
             if (done_o !== expected_done) begin
                 errors = errors + 1;
                 $display("FAIL t=%0t: done=%b expected=%b", $time, done_o, expected_done);
-            end
-            if (out_addr !== expected_out_cnt_q) begin
-                errors = errors + 1;
-                $display("FAIL t=%0t: out_addr=%0d expected=%0d", $time, out_addr,
-                         expected_out_cnt_q);
-            end
-            if (out_last !== expected_out_last) begin
-                errors = errors + 1;
-                $display("FAIL t=%0t: out_last=%b expected=%b", $time, out_last,
-                         expected_out_last);
             end
         end
     end
@@ -512,8 +471,8 @@ module tb_conv_fsm;
 
     // Live monitor: prints signal values on every change
     initial begin : monitor
-        $monitor("Time=%0t | state=%0d | shift=%b rv=%b | kaddr=%0d | out=%0d done=%b", $time,
-                 state_o, shift_valid_o, result_valid_o, kernel_addr_o, out_addr, done_o);
+        $monitor("Time=%0t | state=%0d | shift=%b rv=%b | kaddr=%0d done=%b", $time, state_o,
+                 shift_valid_o, result_valid_o, kernel_addr_o, done_o);
     end
 
     // VCD dump for waveform debugging
