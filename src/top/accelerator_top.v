@@ -50,6 +50,7 @@ module accelerator_top #(
     parameter COEFF_WIDTH = 8,  // Kernel coefficient width (signed)
     parameter OUT_WIDTH = 16,  // Output pixel width (signed)
     parameter ROUND_ENABLE = 1,  // Round-half-up before truncation
+    parameter FRAC_BITS    = 4,   // number of fractional bit in the fixed_point kernel
     parameter PIPE_STAGES = 2,  // Pipeline stages after the window array
     parameter PIX_ADDR_WIDTH = $clog2(IMAGE_WIDTH * IMAGE_HEIGHT),
     parameter PROD_WIDTH = PIXEL_WIDTH + COEFF_WIDTH + 2,
@@ -217,7 +218,7 @@ module accelerator_top #(
         .kernel_we_o     (kernel_we),
         .kernel_addr_o   (kernel_addr),
         .shift_valid_o   (shift_valid),
-        .ready_o         (ready),
+        .ready_o         (ready_o),
         .result_valid_o  (result_valid),
         .rst_count_o     (rst_count),
         .busy_o          (busy_o),
@@ -309,6 +310,7 @@ module accelerator_top #(
     sat_round_unit #(
         .SUM_WIDTH    (SUM_WIDTH),
         .OUT_WIDTH    (OUT_WIDTH),
+        .FRAC_BITS    (FRAC_BITS),
         .ROUND_ENABLE (ROUND_ENABLE)
     ) u_sat_round_unit (
         .sum_i     (sum_to_sat),
