@@ -123,8 +123,9 @@ module conv_fsm #(
                 if (kernel_wr_valid_i) begin
                     load_cnt_d = (load_cnt_q == N*N-1) ? 0 : load_cnt_q + 1;
                     ///################ BUG ################//
-                    if (load_cnt_q == N*N-1) state_d = S_FILL; //change the check on the d because when the checking was on the q
-                                                               // the fsm stuck in load state and after changing every thing did right
+                    if (load_cnt_q == N*N-1) state_d = S_FILL; //this state got stuck if the start and kernel_wr_valid_i is asserted on the same cycle
+                                                               // and it rely on the start signal should be asserted before kernel_wr_valid_i by at least one cycle
+                                                               
                 end
             end
             // Prime the line buffers and the window with the first rows
