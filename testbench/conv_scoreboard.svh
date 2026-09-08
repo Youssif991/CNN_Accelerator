@@ -36,6 +36,8 @@ class conv_scoreboard #(
     int output_count;
     int error_count;
 
+    integer out_file_id;
+
     extern function new(string name = "conv_scoreboard",
                         uvm_component parent = null);
     extern function void build_phase(uvm_phase phase);
@@ -63,6 +65,13 @@ function void conv_scoreboard::build_phase(uvm_phase phase);
     error_count  = 0;
 
     load_expected_results();
+
+    out_file_id = $fopen("dut_output.hex", "w");
+
+    if (out_file_id == 0) begin
+        `uvm_fatal("DUT_OUT_FILE",
+                   "Cannot open dut_output.hex for writing.")
+    end
 endfunction
 
 function void conv_scoreboard::load_expected_results();
@@ -131,6 +140,8 @@ function void conv_scoreboard::write(
             expected_value = expected_results.pop_front();
             actual_value   = item.result_o;
 
+            $fwrite(out_file_id, "%h\n", actual_value);
+
             if (actual_value !== expected_value) begin
                 `uvm_error("SCOREBOARD",
                     $sformatf("Mismatch at output %0d: DUT=%0d, MATLAB=%0d",
@@ -165,6 +176,8 @@ endfunction
 
 function void conv_scoreboard::report_phase(uvm_phase phase);
     super.report_phase(phase);
+
+    $fclose(out_file_id);
 
     if(error_count == 0) begin
         `uvm_info("SCOREBOARD",
