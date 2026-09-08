@@ -16,12 +16,22 @@
 //              pipeline stays synchronized under stalls. Outputs are Moore
 //              (state-derived); result_valid_o is registered to align with
 //              the combinational MAC result that settles one cycle after its
-//              window block completes.
+//              window block completes. A result is only valid once the
+//              sliding window is fully inside the image on BOTH axes
+//              (row >= N-1 AND col >= N-1): the row-only gate previously
+//              here let the window straddle two rows for the first N-1
+//              columns of every row (reusing the tail pixels of the
+//              previous row instead of a true image window), producing
+//              IMAGE_WIDTH*(IMAGE_HEIGHT-N+1) spurious wraparound results
+//              instead of the intended (IMAGE_WIDTH-N+1)*(IMAGE_HEIGHT-N+1)
+//              valid-convolution count. The column gate fixes this.
 //
 // Dependencies: none (drives the datapath and the address generators)
 //
 // Revision:
 // Revision 0.01 - File Created
+// Revision 0.02 - Added column gate to block_valid (fix row-boundary
+//                  wraparound window bug)
 // Additional Comments:
 //
 //////////////////////////////////////////////////////////////////////////////////
@@ -82,10 +92,20 @@ module conv_fsm #(
     // Result valid (next)
     reg result_valid_d;
 
-    // Row of the current input pixel
+    // Row and column of the current input pixel
     wire [PIX_ADDR_WIDTH-1:0] pix_row = pix_addr_i / IMAGE_WIDTH;
-    wire block_valid = (pix_row >= N-1);
+    wire [PIX_ADDR_WIDTH-1:0] pix_col = pix_addr_i % IMAGE_WIDTH;
 
+    // ################### BUG #######################//
+    //-----------updated assumption------------------//
+    // problem : when testing an 8*8 image and kernel 3*3 
+    // expected output image is 6*6 (36 value) but we actually get 8*6 (48 value)
+    // and my assumption thus happens due to checking only rows non checking coloumns
+    //so i added this logic to fix the bug.
+
+    wire block_valid = (pix_row >= N-1) && (pix_col >= N-1); 
+
+//######################################################################//
     // Next-state
     always @(*) begin : next_state
         state_d = state_q;
@@ -102,7 +122,9 @@ module conv_fsm #(
             S_LOAD: begin
                 if (kernel_wr_valid_i) begin
                     load_cnt_d = (load_cnt_q == N*N-1) ? 0 : load_cnt_q + 1;
-                    if (load_cnt_q == N*N-1) state_d = S_FILL;
+                    ///################ BUG ################//
+                    if (load_cnt_q == N*N-1) state_d = S_FILL; //change the check on the d because when the checking was on the q
+                                                               // the fsm stuck in load state and after changing every thing did right
                 end
             end
             // Prime the line buffers and the window with the first rows
