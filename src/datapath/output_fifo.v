@@ -82,8 +82,13 @@ module output_fifo #(
     end
 
     // Memory write
-    always @(posedge clk_i) begin : mem_write
-        if (write_transfer) mem_q[wr_ptr_q[ADDR_WIDTH-1:0]] <= wr_data_i;
+    integer i ;
+    always @(posedge clk_i or negedge rst_n_i) begin : mem_write
+        if(!rst_n_i) begin
+            for ( i = 0 ; i < DEPTH ; i = i + 1)   //##### reseting mem_q #######//
+            mem_q[i] <= 'd0;
+        end
+        else if (write_transfer) mem_q[wr_ptr_q[ADDR_WIDTH-1:0]] <= wr_data_i;
     end
 
     // Output decode (FWFT: present the oldest word; no read-stage register)
