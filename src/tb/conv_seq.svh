@@ -119,8 +119,8 @@ task conv_seq::body();
     bit result_ready;
     bit relu_en = 1'b1;
 
-    $readmemh("kernel_coeff.hex", kernel_data);
-    $readmemh("pixel_input.hex", pixel_data);
+    $readmemh("src/tb/kernel_coeff.hex", kernel_data);
+    $readmemh("src/tb/pixel_input.hex", pixel_data);
 
     // Load kernel coefficients
     idle_cycle( 2 , 1'b1);

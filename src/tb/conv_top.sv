@@ -20,7 +20,6 @@ module conv_top();
     localparam int OUT_WIDTH    = 16;
     localparam int ROUND_ENABLE = 1;
     localparam int FRAC_BITS    = 4;
-    localparam int PIPE_STAGES  = 2;
 
     // 1. DUT reset handle
     bit rst_n_i;
@@ -40,8 +39,7 @@ module conv_top();
         .PIXEL_WIDTH(PIXEL_WIDTH),
         .COEFF_WIDTH(COEFF_WIDTH),
         .OUT_WIDTH(OUT_WIDTH),
-        .ROUND_ENABLE(ROUND_ENABLE),
-        .PIPE_STAGES(PIPE_STAGES)
+        .ROUND_ENABLE(ROUND_ENABLE)
     ) intf (clk_i, rst_n_i);
 
     accelerator_top #(
@@ -52,8 +50,7 @@ module conv_top();
         .COEFF_WIDTH(COEFF_WIDTH),
         .OUT_WIDTH(OUT_WIDTH),
         .ROUND_ENABLE(ROUND_ENABLE),
-        .FRAC_BITS(FRAC_BITS),
-        .PIPE_STAGES(PIPE_STAGES)
+        .FRAC_BITS(FRAC_BITS)
     ) u_accelerator_top (
         .clk_i            (intf.clk),
         .rst_n_i          (intf.rst_n),
@@ -77,7 +74,7 @@ module conv_top();
     initial begin
     uvm_config_db#(virtual conv_intf#(
         N, IMAGE_WIDTH, IMAGE_HEIGHT, PIXEL_WIDTH, COEFF_WIDTH, OUT_WIDTH,
-        ROUND_ENABLE, FRAC_BITS, PIPE_STAGES
+        ROUND_ENABLE, FRAC_BITS
     ))::set(null, "uvm_test_top", "conv_vif", intf);
 
     // Run the non-parameterized test name registered in factory

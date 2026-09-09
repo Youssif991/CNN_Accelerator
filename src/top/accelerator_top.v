@@ -13,8 +13,8 @@
 //              coefficient per valid pulse), then pulses start_i; the input
 //              image streams in one 8-bit pixel per cycle (pixel_in_i /
 //              pixel_valid_i) and the accelerator produces one output word per
-//              accepted pixel (result_o / result_valid_o, gap-free, border
-//              windows included). A deasserted pixel_valid_i stalls the stream
+//              valid convolution window (result_o / result_valid_o; border
+//              windows are excluded). A deasserted pixel_valid_i stalls the stream
 //              and a full output FIFO (result_ready_i deasserted) freezes the
 //              pipeline, so no result is lost; the counters and the sliding
 //              window hold, keeping the stream synchronized. result_tlast_o
@@ -70,7 +70,8 @@ module accelerator_top #(
     output wire [OUT_WIDTH-1:0] result_o,  // Output data (FIFO read)
     output wire result_tlast_o,  // Last output word of the frame
     input wire result_ready_i,  // Output ready
-    output wire ready_o  // Accepting input pixels (FILL/COMPUTE) - AXI-Stream TREADY
+    output wire ready_o,  // Accepting input pixels (FILL/COMPUTE) - AXI-Stream TREADY
+    output wire [2:0] state_o
 );
 
     // Parameters
@@ -105,7 +106,6 @@ module accelerator_top #(
     wire fifo_wr_ready;  // output FIFO write ready (not full)
     wire fifo_rd_valid;  // output FIFO read valid (not empty)
     wire [OUT_WIDTH:0] fifo_rd_data;  // output FIFO read data {last, result}
-
     // Back-pressure: freeze the pipeline when a result cannot be delivered
     assign output_stall = result_valid_p && !fifo_wr_ready;
 
@@ -193,6 +193,8 @@ module accelerator_top #(
         .done_o          (done_o),
         .state_o         (state)
     );
+
+    assign state_o = state;
 
     // Pixel position counter (input)
     pixel_counter #(

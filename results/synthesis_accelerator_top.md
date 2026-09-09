@@ -15,7 +15,7 @@ streaming input / PR #15) are kept below for comparison.
 | Output interface | FWFT output FIFO only: `result_o` / `result_valid_o` / `result_tlast_o` + `result_ready_i` back-pressure  |
 | Output buffering | 16 × 17-bit FWFT sync FIFO (`output_fifo`, 12 LUTRAMs); a full FIFO stalls the accept via `output_stall`  |
 | Result storage   | none — results exist only in the stream (the `res_mem` mirror was removed)                               |
-| Pipeline         | `PIPE_STAGES = 2` — stage 1 is the DSP P register, stage 2 the adder-tree sum register                   |
+| Pipeline         | Fixed two-stage pipeline: stage 1 is the DSP P register, stage 2 the adder-tree sum register             |
 | Device           | XC7Z020-CLG400-1 (PYNQ-Z2), speed grade -1                                                               |
 | Tool             | Vivado 2025.2, batch flow (`scripts/run_synth.tcl`)                                                      |
 | Flow             | synthesis → opt_design → place → route (reports post-route)                                              |

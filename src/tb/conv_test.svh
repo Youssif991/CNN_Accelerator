@@ -24,8 +24,7 @@ class conv_test extends my_test #(
     .COEFF_WIDTH(8),
     .OUT_WIDTH(16),
     .ROUND_ENABLE(1),
-    .FRAC_BITS(4),
-    .PIPE_STAGES(2)
+    .FRAC_BITS(4)
 );
 
     // Register this non-parameterized specialization with the factory

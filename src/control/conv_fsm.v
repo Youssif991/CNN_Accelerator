@@ -126,7 +126,7 @@ module conv_fsm #(
                 if (kernel_wr_valid_i) begin
                     load_cnt_d = (load_cnt_q == N*N-1) ? 0 : load_cnt_q + 1;
                     ///################ BUG ################//
-                    if (load_cnt_q == N*N-1) state_d = S_FILL; //this state got stuck if the start and kernel_wr_valid_i is asserted on the same cycle
+                    if (load_cnt_q == N*N-1) state_d = S_FILL;
                                                                // and it rely on the start signal should be asserted before kernel_wr_valid_i by at least one cycle
                                                                
                 end
@@ -137,12 +137,18 @@ module conv_fsm #(
             end
             // Shift the stream and produce one output pixel per cycle.
             S_COMPUTE: begin
-                result_valid_d = block_valid && pixel_valid_i;
-                if (pix_last_i) begin
-                    exit_cnt_d = EXIT_CYCLES;
-                end else if (exit_cnt_q > 0) begin
-                    exit_cnt_d = exit_cnt_q - 1;
-                    if (exit_cnt_q == 1) state_d = S_DONE;
+                // A stalled output freezes the input position and the
+                // pipeline, including the valid bit for the held result.
+                if (output_stall_i) begin
+                    result_valid_d = result_valid_q;
+                end else begin
+                    result_valid_d = block_valid && pixel_valid_i;
+                    if (pix_last_i) begin
+                        exit_cnt_d = EXIT_CYCLES;
+                    end else if (exit_cnt_q > 0) begin
+                        exit_cnt_d = exit_cnt_q - 1;
+                        if (exit_cnt_q == 1) state_d = S_DONE;
+                    end
                 end
             end
             // Hold the done flag, then re-arm for the next frame

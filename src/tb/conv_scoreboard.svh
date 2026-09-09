@@ -80,11 +80,11 @@ function void conv_scoreboard::load_expected_results();
     integer unsigned file_value;
     bit signed [OUT_WIDTH-1:0] expected_value;
 
-    file_id = $fopen("expected_output.hex", "r");
+    file_id = $fopen("src/tb/expected_output.hex", "r");
 
     if (file_id == 0) begin
         `uvm_fatal("GOLDEN_FILE",
-                   "Cannot open expected_output.hex. Check the simulator working directory.")
+                   "Cannot open src/tb/expected_output.hex. Run from the repository root.")
     end
 
     while (!$feof(file_id)) begin
@@ -181,8 +181,7 @@ function void conv_scoreboard::report_phase(uvm_phase phase);
 
     if(error_count == 0) begin
         `uvm_info("SCOREBOARD",
-                  $sformatf("ALL TEST PASSED WITH 0 ERRORS",
-                            output_count), UVM_NONE)
+                  $sformatf("ALL TEST PASSED WITH 0 ERRORS"), UVM_NONE)
     end
 
     else 
