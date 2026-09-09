@@ -134,7 +134,7 @@ module tb_conv_fsm;
     reg [STATE_WIDTH-1:0] ref_phase_q;
     reg [PIX_ADDR_WIDTH-1:0] ref_shifts_q;  // pixels shifted so far
     reg [$clog2(N*N)-1:0] ref_load_q;  // kernel load index
-    reg [1:0] ref_exit_q;  // compute-exit countdown
+    reg [2:0] ref_exit_q;  // compute-exit countdown (4 cycles after the last pixel)
     reg expected_result_valid;
 
     always @(posedge clk_i or negedge rst_n_i) begin : reference
@@ -174,7 +174,7 @@ module tb_conv_fsm;
                 PH_COMPUTE: begin
                     expected_result_valid <= ref_block_valid && pixel_valid_i;
                     if (ref_shifts_q == TOTAL_PIXELS-1) begin
-                        ref_exit_q <= 2;
+                        ref_exit_q <= 4;  // fixed 2-stage datapath drain
                     end else if (ref_exit_q > 0) begin
                         ref_exit_q <= ref_exit_q - 1;
                         if (ref_exit_q == 1) ref_phase_q <= PH_DONE;
@@ -274,8 +274,8 @@ module tb_conv_fsm;
         end
 
         // Directed test 2: a full frame with exact per-phase counts
-        // Expected: 9 accepted kernel writes, 1026 shift cycles (66 fill +
-        // 958 compute + 2 exit), 900 result-valid pulses, then done/re-arm.
+        // Expected: 9 accepted kernel writes, 1028 shift cycles (66 fill +
+        // 958 compute + 4 exit), 900 result-valid pulses, then done/re-arm.
         load_count = 0;
         shift_count = 0;
         valid_count = 0;
@@ -305,10 +305,10 @@ module tb_conv_fsm;
             errors = errors + 1;
             $display("FAIL t=%0t: kernel writes=%0d expected %0d", $time, load_count, N*N);
         end
-        if (shift_count !== TOTAL_PIXELS + 2) begin
+        if (shift_count !== TOTAL_PIXELS + 4) begin
             errors = errors + 1;
-            $display("FAIL t=%0t: shift cycles=%0d expected %0d", $time, shift_count,
-                     TOTAL_PIXELS + 2);
+            $display("FAIL t=%0t: shift_count=%0d expected=%0d", $time, shift_count,
+                     TOTAL_PIXELS + 4);
         end
         if (valid_count !== STREAM_OUT_TOTAL) begin
             errors = errors + 1;

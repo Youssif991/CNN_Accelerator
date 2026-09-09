@@ -37,7 +37,6 @@ module tb_accelerator_top;
     localparam PIXEL_WIDTH = 8;
     localparam COEFF_WIDTH = 8;
     localparam OUT_WIDTH = 16;
-    localparam PIPE_STAGES = 2;  // must match the accelerator top default
     localparam TOTAL_PIXELS = IMAGE_WIDTH * IMAGE_HEIGHT;
     localparam PIX_ADDR_WIDTH = $clog2(TOTAL_PIXELS);
     // Streamed outputs per frame: every accepted pixel past the fill rows
@@ -60,7 +59,7 @@ module tb_accelerator_top;
     reg relu_en_i;
     wire busy_o;
     wire done_o;
-    wire [2:0] state_o;
+    wire ready_o;
     reg result_ready_i;
     wire result_valid_o;
     wire [OUT_WIDTH-1:0] result_o;
@@ -84,15 +83,14 @@ module tb_accelerator_top;
     // Captured streaming output (indexed by result_valid_o pulses)
     reg signed [OUT_WIDTH-1:0] stream_out[0:1023];
 
-    // Module instantiation (defaults: streaming input, PIPE_STAGES=2)
+    // Module instantiation (streaming input, fixed 2-stage datapath)
     accelerator_top #(
         .N           (N),
         .IMAGE_WIDTH (IMAGE_WIDTH),
         .IMAGE_HEIGHT(IMAGE_HEIGHT),
         .PIXEL_WIDTH (PIXEL_WIDTH),
         .COEFF_WIDTH (COEFF_WIDTH),
-        .OUT_WIDTH   (OUT_WIDTH),
-        .PIPE_STAGES (PIPE_STAGES)
+        .OUT_WIDTH   (OUT_WIDTH)
     ) dut (
         .clk_i            (clk_i),
         .rst_n_i          (rst_n_i),
@@ -104,7 +102,7 @@ module tb_accelerator_top;
         .relu_en_i        (relu_en_i),
         .busy_o           (busy_o),
         .done_o           (done_o),
-        .state_o          (state_o),
+        .ready_o          (ready_o),
         .result_valid_o   (result_valid_o),
         .result_o         (result_o),
         .result_tlast_o   (result_tlast_o),
@@ -184,7 +182,7 @@ module tb_accelerator_top;
         integer stall_len;
         begin
             // Wait until the FSM reaches FILL before presenting pixels
-            while (state_o !== 2) @(negedge clk_i);
+            while (!ready_o) @(negedge clk_i);
             for (p = 0; p < TOTAL_PIXELS; p = p + 1) begin
                 // Present pixel p only when the count asks for it, and hold it
                 // until it is accepted (the pixel_counter advances past p)
@@ -399,9 +397,9 @@ module tb_accelerator_top;
     // Bonus check: in a sustained stream (pixel_valid high every cycle) the
     // output valid must never deassert for two or more consecutive cycles
     // inside COMPUTE, after the initial pipeline fill. The check arms only
-    // once the input has been continuously valid for PIPE_STAGES+1 cycles,
-    // so the pipeline-fill latency at frame start and after a stall
-    // (allowed initial/recovery latency) is not counted.
+    // once the input has been continuously valid for 3 cycles (the fixed
+    // 2-stage datapath + 1), so the pipeline-fill latency at frame start and
+    // after a stall (allowed initial/recovery latency) is not counted.
     always @(posedge clk_i) begin : gap_check
         reg [3:0] low_cnt;
         reg [3:0] valid_streak;
@@ -411,12 +409,12 @@ module tb_accelerator_top;
             valid_streak = 0;
             seen_valid = 0;
         end else begin
-            if (state_o == 2) seen_valid = 0;  // re-arm at each frame fill
+            if (start_i) seen_valid = 0;  // re-arm at each frame fill
             if (result_valid_o) seen_valid = 1;
             if (pixel_valid_i) valid_streak = valid_streak + 1;
             else valid_streak = 0;
-            if (seen_valid && (state_o == 3) && pixel_valid_i && !result_valid_o &&
-                (valid_streak > PIPE_STAGES + 1)) begin
+            if (seen_valid && (ready_o) && pixel_valid_i && !result_valid_o &&
+                (valid_streak > 3)) begin
                 low_cnt = low_cnt + 1;
                 if (low_cnt >= 2) begin
                     errors = errors + 1;
