@@ -82,7 +82,6 @@ module accelerator_top #(
     wire kernel_we;
     wire [$clog2(N*N)-1:0] kernel_addr;
     wire shift_valid;
-    wire ready;
     wire result_valid;
     wire rst_count;
     wire [2:0] state;
@@ -186,7 +185,7 @@ module accelerator_top #(
         .kernel_we_o     (kernel_we),
         .kernel_addr_o   (kernel_addr),
         .shift_valid_o   (shift_valid),
-        .ready_o         (ready),
+        .ready_o         (ready_o),
         .result_valid_o  (result_valid),
         .rst_count_o     (rst_count),
         .busy_o          (busy_o),
