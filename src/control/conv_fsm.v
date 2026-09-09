@@ -31,7 +31,6 @@ module conv_fsm #(
     parameter IMAGE_WIDTH = 32,  // Input feature-map width
     parameter IMAGE_HEIGHT = 32,  // Input feature-map height
     parameter COEFF_WIDTH = 8,  // Kernel coefficient width
-    parameter PIPE_STAGES = 0,  // Datapath pipeline delay (stages after the window)
     parameter PIX_ADDR_WIDTH = $clog2(IMAGE_WIDTH * IMAGE_HEIGHT),
     parameter STATE_WIDTH = 3  // State encoding width
 ) (
@@ -73,10 +72,14 @@ module conv_fsm #(
     reg [$clog2(N*N)-1:0] load_cnt_q;
     // Kernel load index (next)
     reg [$clog2(N*N)-1:0] load_cnt_d;
-    // Compute-exit countdown (current)
-    reg [$clog2(PIPE_STAGES+3)-1:0] exit_cnt_q;
+    // Compute-exit countdown (current). The datapath is a fixed 2-stage
+    // pipeline (DSP P register + adder-tree sum register), so the FSM holds
+    // COMPUTE for 4 cycles after the last accepted pixel to let the final
+    // results drain before asserting done.
+    localparam EXIT_CYCLES = 4;  // pipeline stages + 2
+    reg [2:0] exit_cnt_q;
     // Compute-exit countdown (next)
-    reg [$clog2(PIPE_STAGES+3)-1:0] exit_cnt_d;
+    reg [2:0] exit_cnt_d;
     // Result valid (current, pipeline aligned)
     reg result_valid_q;
     // Result valid (next)
@@ -113,7 +116,7 @@ module conv_fsm #(
             S_COMPUTE: begin
                 result_valid_d = block_valid && pixel_valid_i;
                 if (pix_last_i) begin
-                    exit_cnt_d = PIPE_STAGES + 2;
+                    exit_cnt_d = EXIT_CYCLES;
                 end else if (exit_cnt_q > 0) begin
                     exit_cnt_d = exit_cnt_q - 1;
                     if (exit_cnt_q == 1) state_d = S_DONE;
