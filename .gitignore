@@ -106,10 +106,13 @@ compile*
 *.vcd
 *.wdb
 
+
 ## ModelSim, UVVM
 transcript*
 work/
 .cxl*
+*.vstf
+*.ini*
 # .cxl.modelsim.version # .cxl.ip/
 _*
 _Alert.txt
@@ -125,3 +128,4 @@ _info
 **.qpg
 **.qtl
 .vscode/settings.json
+*.code-workspace
