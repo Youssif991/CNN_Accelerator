@@ -135,6 +135,9 @@ module tb_conv_fsm;
     reg [2:0] ref_exit_q;  // compute-exit countdown (4 cycles after the last pixel)
     reg expected_result_valid;
 
+    wire ref_block_valid = ((ref_shifts_q / IMAGE_WIDTH) >= N-1) &&
+                           ((ref_shifts_q % IMAGE_WIDTH) >= N-1);
+
     always @(posedge clk_i or negedge rst_n_i) begin : reference
         if (!rst_n_i) begin
             ref_phase_q <= PH_IDLE;
