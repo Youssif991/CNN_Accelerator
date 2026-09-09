@@ -7,17 +7,30 @@
 // Module Name: tb_sat_round_unit
 // Tool Versions: Vivado 2025.2
 // Description: Self-checking testbench for the saturate/round unit with the
-//              optional ReLU activation. A golden reference models ReLU
-//              (clamp negatives to zero), round-half-up truncation, and
-//              clamping with integer arithmetic (arithmetic shift vs the
-//              DUT's part-select and pre-truncation bounds); the checker
-//              compares both the rounding and the plain-truncation instances
-//              after a #1 settle. Exercises both relu_en_i settings.
+//              optional ReLU activation. Tests the fixed-point rescale path
+//              (FRAC_BITS = 6): ReLU (clamp negatives to zero), round-half-up
+//              shift by FRAC_BITS, then saturate to OUT_WIDTH. The golden
+//              model mirrors sat_round_unit's own arithmetic exactly,
+//              including its 1-bit headroom widening before the round bias
+//              is added.
+//
+//              Note: as of sat_round_unit Rev 0.03, ROUND_ENABLE is a no-op
+//              (rounding is controlled entirely by FRAC_BITS), so there is
+//              no DUT configuration that performs "truncation without
+//              rounding" at a nonzero FRAC_BITS. This testbench therefore
+//              exercises a single DUT instance against the round-half-up
+//              model only; the old dual round/trunc comparison from
+//              Revision 0.01 no longer applies to the current RTL contract.
 //
 // Dependencies: sat_round_unit (src/datapath/sat_round_unit.v)
 //
 // Revision:
 // Revision 0.01 - File Created
+// Revision 0.02 - Removed the truncation-mode DUT instance and checker
+//                  (ROUND_ENABLE no longer controls rounding behavior in
+//                  sat_round_unit Rev 0.03). Added FRAC_BITS=6 to the DUT
+//                  instantiation and rewrote the golden model to match
+//                  sat_round_unit's rescale arithmetic exactly.
 // Additional Comments:
 //
 //////////////////////////////////////////////////////////////////////////////////
@@ -27,7 +40,7 @@ module tb_sat_round_unit;
     // Parameters
     localparam SUM_WIDTH = 22;
     localparam OUT_WIDTH = 16;
-    localparam BITS_DROPPED = SUM_WIDTH - OUT_WIDTH;
+    localparam FRAC_BITS = 6;  // fractional bits in the fixed-point kernel/product scale
     localparam SAT_MAX = (1 << (OUT_WIDTH-1)) - 1;   // +32767
     localparam SAT_MIN = -(1 << (OUT_WIDTH-1));      // -32768
     localparam NUM_TESTS = 100;  // random stimulus vectors
@@ -35,50 +48,40 @@ module tb_sat_round_unit;
     // DUT interconnect
     reg signed [SUM_WIDTH-1:0] sum_i;
     reg relu_en_i;
-    wire signed [OUT_WIDTH-1:0] result_o;        // rounding enabled
-    wire signed [OUT_WIDTH-1:0] result_o_trunc;  // plain truncation
+    wire signed [OUT_WIDTH-1:0] result_o;
 
     // Test infrastructure
     integer i;  // test procedure loop counter
     integer errors = 0;
-    reg signed [SUM_WIDTH-1:0] expected_shifted;       // rounded, pre-clamp
-    reg signed [SUM_WIDTH-1:0] expected_shifted_trunc; // truncated, pre-clamp
+    reg signed [SUM_WIDTH:0] expected_shifted;  // +1 bit: matches sat_round_unit's headroom bit
     reg signed [OUT_WIDTH-1:0] expected_result;
-    reg signed [OUT_WIDTH-1:0] expected_result_trunc;
 
-    // Module instantiation (both rounding modes in one run)
+    // Module instantiation
     sat_round_unit #(
-        .SUM_WIDTH(SUM_WIDTH),
-        .OUT_WIDTH(OUT_WIDTH),
-        .ROUND_ENABLE(1)
+        .SUM_WIDTH   (SUM_WIDTH),
+        .OUT_WIDTH   (OUT_WIDTH),
+        .FRAC_BITS   (FRAC_BITS)
     ) dut (
-        .sum_i(sum_i),
+        .sum_i    (sum_i),
         .relu_en_i(relu_en_i),
-        .result_o(result_o)
+        .result_o (result_o)
     );
 
-    sat_round_unit #(
-        .SUM_WIDTH(SUM_WIDTH),
-        .OUT_WIDTH(OUT_WIDTH),
-        .ROUND_ENABLE(0)
-    ) dut_trunc (
-        .sum_i(sum_i),
-        .relu_en_i(relu_en_i),
-        .result_o(result_o_trunc)
-    );
-
-    // Golden reference (rounding mode)
-    // Independent integer model: optional ReLU (clamp negatives to zero), add
-    // half the dropped LSBs, arithmetic-shift (floor for negatives - same as
-    // the DUT's part-select), then clamp.
+    // Golden reference: mirrors sat_round_unit's own computation.
+    // ReLU-clamp, sign-extend by 1 bit (matches sum_relu's headroom bit),
+    // then round-half-up + shift by FRAC_BITS (a true no-op when
+    // FRAC_BITS == 0), then saturate.
     reg signed [SUM_WIDTH-1:0] ref_sum;
     always @(*) begin : reference
         ref_sum = (relu_en_i && (sum_i < 0)) ? 0 : sum_i;
-        // Round: add half the dropped LSBs into the signed accumulator, then
-        // arithmetic-shift (floor for negatives - same as the DUT's
-        // part-select), then clamp.
-        expected_shifted = ref_sum + (1 << (BITS_DROPPED-1));
-        expected_shifted = expected_shifted >>> BITS_DROPPED;
+
+        if (FRAC_BITS > 0) begin
+            expected_shifted = ($signed({ref_sum[SUM_WIDTH-1], ref_sum}) +
+                                (1 <<< (FRAC_BITS - 1))) >>> FRAC_BITS;
+        end else begin
+            expected_shifted = $signed({ref_sum[SUM_WIDTH-1], ref_sum});
+        end
+
         if (expected_shifted > SAT_MAX) begin
             expected_result = SAT_MAX;
         end else if (expected_shifted < SAT_MIN) begin
@@ -88,32 +91,13 @@ module tb_sat_round_unit;
         end
     end
 
-    // Golden reference (truncation mode): optional ReLU, then no rounding bias.
-    always @(*) begin : reference_trunc
-        ref_sum = (relu_en_i && (sum_i < 0)) ? 0 : sum_i;
-        expected_shifted_trunc = ref_sum >>> BITS_DROPPED;
-        if (expected_shifted_trunc > SAT_MAX) begin
-            expected_result_trunc = SAT_MAX;
-        end else if (expected_shifted_trunc < SAT_MIN) begin
-            expected_result_trunc = SAT_MIN;
-        end else begin
-            expected_result_trunc = $signed(expected_shifted_trunc[OUT_WIDTH-1:0]);
-        end
-    end
-
-    // Checker
-    // Compares both instances 1 ns after each stimulus change.
+    // Checker: compares the DUT 1 ns after each stimulus change.
     always @(*) begin : check
         #1;
         if (result_o !== expected_result) begin
             errors = errors + 1;
-            $display("FAIL t=%0t: round dut=%0d expected=%0d", $time, result_o,
+            $display("FAIL t=%0t: result dut=%0d expected=%0d", $time, result_o,
                      expected_result);
-        end
-        if (result_o_trunc !== expected_result_trunc) begin
-            errors = errors + 1;
-            $display("FAIL t=%0t: trunc dut=%0d expected=%0d", $time, result_o_trunc,
-                     expected_result_trunc);
         end
     end
 
@@ -124,7 +108,7 @@ module tb_sat_round_unit;
         relu_en_i = 0;
         #10;
 
-        // Directed test 1: exact multiples of 2^BITS_DROPPED (no rounding)
+        // Directed test 1: exact multiples of 2^FRAC_BITS (no rounding)
         sum_i = 22'sd64;
         #10;
         sum_i = -22'sd64;
@@ -196,8 +180,8 @@ module tb_sat_round_unit;
 
     // Live monitor: prints signal values on every change
     initial begin : monitor
-        $monitor("Time=%0t | sum=%0d | round=%0d trunc=%0d | exp_r=%0d exp_t=%0d", $time, sum_i,
-                 result_o, result_o_trunc, expected_result, expected_result_trunc);
+        $monitor("Time=%0t | sum=%0d | result=%0d | expected=%0d", $time, sum_i, result_o,
+                 expected_result);
     end
 
     // VCD dump for waveform debugging
