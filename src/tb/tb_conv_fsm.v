@@ -476,5 +476,3 @@ module tb_conv_fsm;
     end
 
 endmodule
-    wire ref_block_valid = ((ref_shifts_q / IMAGE_WIDTH) >= N-1) &&
-                                ((ref_shifts_q % IMAGE_WIDTH) >= N-1);
