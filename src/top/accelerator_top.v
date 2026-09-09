@@ -19,12 +19,13 @@
 //              pipeline, so no result is lost; the counters and the sliding
 //              window hold, keeping the stream synchronized. result_tlast_o
 //              marks the frame's last word. The MAC-to-result chain is
-//              pipelined (PIPE_STAGES register stages) to raise Fmax; the
-//              result-valid flag shifts with the data. The N*N per-tap
-//              multipliers are DSP48E1s (dsp_mult_r4), whose P registers are
-//              pipeline stage 1. An optional ReLU activation (relu_en_i,
-//              host-set per frame) clamps negative outputs to zero before
-//              rounding in the saturate/round unit.
+//              pipelined (2 fixed stages: the DSP P register and the
+//              adder-tree sum register) to raise Fmax; the result-valid flag
+//              shifts with the data. The N*N per-tap multipliers are DSP48E1s
+//              (dsp_mult_r4), whose P registers are pipeline stage 1. An
+//              optional ReLU activation (relu_en_i, host-set per frame)
+//              clamps negative outputs to zero before rounding in the
+//              saturate/round unit.
 //
 // Dependencies: conv_fsm (src/control/conv_fsm.v)
 //               pixel_counter (src/control/pixel_counter.v)
@@ -50,7 +51,7 @@ module accelerator_top #(
     parameter COEFF_WIDTH = 8,  // Kernel coefficient width (signed)
     parameter OUT_WIDTH = 16,  // Output pixel width (signed)
     parameter ROUND_ENABLE = 1,  // Round-half-up before truncation
-    parameter PIPE_STAGES = 2,  // Pipeline stages after the window array
+    parameter FRAC_BITS    = 4,   // number of fractional bit in the fixed_point kernel
     parameter PIX_ADDR_WIDTH = $clog2(IMAGE_WIDTH * IMAGE_HEIGHT),
     parameter PROD_WIDTH = PIXEL_WIDTH + COEFF_WIDTH + 2,
     parameter SUM_WIDTH = PROD_WIDTH + $clog2(N*N)
@@ -65,7 +66,6 @@ module accelerator_top #(
     input wire relu_en_i,  // ReLU enable (host-set per frame: clamp negatives to zero)
     output wire busy_o,  // Frame in progress
     output wire done_o,  // Frame complete
-    output wire [2:0] state_o,  // FSM state (observability)
     output wire result_valid_o,  // Output word available (FIFO not empty)
     output wire [OUT_WIDTH-1:0] result_o,  // Output data (FIFO read)
     output wire result_tlast_o,  // Last output word of the frame
@@ -73,15 +73,19 @@ module accelerator_top #(
     output wire ready_o  // Accepting input pixels (FILL/COMPUTE) - AXI-Stream TREADY
 );
 
+    // Parameters
+    localparam STATE_WIDTH = 3;
+    localparam DEPTH = 16;
+    
     // Control-unit interconnect
     wire [PIX_ADDR_WIDTH-1:0] pix_addr;
     wire pix_last;
     wire kernel_we;
     wire [$clog2(N*N)-1:0] kernel_addr;
     wire shift_valid;
-    wire ready;
     wire result_valid;
     wire rst_count;
+    wire [2:0] state;
 
     // Datapath interconnect
     wire [N*PIXEL_WIDTH-1:0] row_streams;
@@ -105,32 +109,19 @@ module accelerator_top #(
     // Back-pressure: freeze the pipeline when a result cannot be delivered
     assign output_stall = result_valid_p && !fifo_wr_ready;
 
-    // Frame-last flag: the last accepted pixel's result ends the frame
+    // Frame-last flag
     reg last_q;
     always @(posedge clk_i or negedge rst_n_i) begin : last_reg
         if (!rst_n_i) last_q <= 1'b0;
         else if (!output_stall) last_q <= pix_last;
     end
 
-    generate
-        if (PIPE_STAGES == 1) begin : gen_pipe_last1
-            reg last_p1;
-            always @(posedge clk_i or negedge rst_n_i) begin : stage
-                if (!rst_n_i) last_p1 <= 1'b0;
-                else if (!output_stall) last_p1 <= last_q;
-            end
-            assign last_p = last_p1;
-        end else if (PIPE_STAGES >= 2) begin : gen_pipe_lastn
-            reg [PIPE_STAGES-1:0] last_p1;
-            always @(posedge clk_i or negedge rst_n_i) begin : stage
-                if (!rst_n_i) last_p1 <= 0;
-                else if (!output_stall) last_p1 <= {last_p1[PIPE_STAGES-2:0], last_q};
-            end
-            assign last_p = last_p1[PIPE_STAGES-1];
-        end else begin : gen_no_pipe_last
-            assign last_p = last_q;
-        end
-    endgenerate
+    reg [1:0] last_p1;  // stage-1 + stage-2 copies of the frame-last flag
+    always @(posedge clk_i or negedge rst_n_i) begin : last_pipe
+        if (!rst_n_i) last_p1 <= 0;
+        else if (!output_stall) last_p1 <= {last_p1[0], last_q};
+    end
+    assign last_p = last_p1[1];
 
     // Pipeline stage 1 is inside the MAC array: each dsp_mult_r4 tap maps to a
     // DSP48E1 whose P register (clock-enabled by !output_stall) holds the
@@ -138,47 +129,26 @@ module accelerator_top #(
     assign products_to_tree = products;
 
     // Pipeline stage 2: register the adder-tree sum (holds while stalled)
-    generate
-        if (PIPE_STAGES >= 2) begin : gen_pipe_sum
-            reg signed [SUM_WIDTH-1:0] sum_p1;
-            always @(posedge clk_i or negedge rst_n_i) begin : stage
-                if (!rst_n_i) sum_p1 <= 0;
-                else if (!output_stall) sum_p1 <= conv_sum;
-            end
-            assign sum_to_sat = sum_p1;
-        end else begin : gen_no_pipe_sum
-            assign sum_to_sat = conv_sum;
-        end
-    endgenerate
+    reg signed [SUM_WIDTH-1:0] sum_p1;
+    always @(posedge clk_i or negedge rst_n_i) begin : sum_reg
+        if (!rst_n_i) sum_p1 <= 0;
+        else if (!output_stall) sum_p1 <= conv_sum;
+    end
+    assign sum_to_sat = sum_p1;
 
-    // Pipeline valid: shifts with the data (holds while stalled)
-    generate
-        if (PIPE_STAGES == 1) begin : gen_pipe_valid1
-            reg valid_p1;
-            always @(posedge clk_i or negedge rst_n_i) begin : stage
-                if (!rst_n_i) valid_p1 <= 1'b0;
-                else if (!output_stall) valid_p1 <= result_valid;
-            end
-            assign result_valid_p = valid_p1;
-        end else if (PIPE_STAGES >= 2) begin : gen_pipe_validn
-            reg [PIPE_STAGES-1:0] valid_p1;
-            always @(posedge clk_i or negedge rst_n_i) begin : stage
-                if (!rst_n_i) valid_p1 <= 0;
-                else if (!output_stall) valid_p1 <= {valid_p1[PIPE_STAGES-2:0], result_valid};
-            end
-            assign result_valid_p = valid_p1[PIPE_STAGES-1];
-        end else begin : gen_no_pipe_valid
-            assign result_valid_p = result_valid;
-        end
-    endgenerate
+    // Pipeline valid: shifts with the data through the two stages (holds
+    // while stalled)
+    reg [1:0] valid_p1;
+    always @(posedge clk_i or negedge rst_n_i) begin : valid_pipe
+        if (!rst_n_i) valid_p1 <= 0;
+        else if (!output_stall) valid_p1 <= {valid_p1[0], result_valid};
+    end
+    assign result_valid_p = valid_p1[1];
 
-    // Output FIFO: decouples the pipeline from the consumer. The write side
-    // accepts the gap-free result stream (border windows included); when it
-    // is full the pipeline stalls (output_stall). The read side is FWFT and
-    // carries the frame-last flag for tlast.
+    // Output FIFO.
     output_fifo #(
         .DATA_WIDTH(OUT_WIDTH + 1),  // {frame_last, result}
-        .DEPTH(16)
+        .DEPTH(DEPTH)
     ) u_out_fifo (
         .clk_i     (clk_i),
         .rst_n_i   (rst_n_i),
@@ -201,9 +171,8 @@ module accelerator_top #(
         .IMAGE_WIDTH   (IMAGE_WIDTH),
         .IMAGE_HEIGHT  (IMAGE_HEIGHT),
         .COEFF_WIDTH   (COEFF_WIDTH),
-        .PIPE_STAGES   (PIPE_STAGES),
         .PIX_ADDR_WIDTH(PIX_ADDR_WIDTH),
-        .STATE_WIDTH   (3)
+        .STATE_WIDTH   (STATE_WIDTH)
     ) u_fsm (
         .clk_i           (clk_i),
         .rst_n_i         (rst_n_i),
@@ -217,12 +186,12 @@ module accelerator_top #(
         .kernel_we_o     (kernel_we),
         .kernel_addr_o   (kernel_addr),
         .shift_valid_o   (shift_valid),
-        .ready_o         (ready),
+        .ready_o         (ready_o),
         .result_valid_o  (result_valid),
         .rst_count_o     (rst_count),
         .busy_o          (busy_o),
         .done_o          (done_o),
-        .state_o         (state_o)
+        .state_o         (state)
     );
 
     // Pixel position counter (input)
@@ -309,6 +278,7 @@ module accelerator_top #(
     sat_round_unit #(
         .SUM_WIDTH    (SUM_WIDTH),
         .OUT_WIDTH    (OUT_WIDTH),
+        .FRAC_BITS    (FRAC_BITS),
         .ROUND_ENABLE (ROUND_ENABLE)
     ) u_sat_round_unit (
         .sum_i     (sum_to_sat),
