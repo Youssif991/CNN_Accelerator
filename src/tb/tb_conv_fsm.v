@@ -37,7 +37,7 @@ module tb_conv_fsm;
     localparam TOTAL_PIXELS = IMAGE_WIDTH * IMAGE_HEIGHT;
     // Streamed outputs per frame: every accepted pixel past the fill rows
     // (includes the N-1 border windows per row)
-    localparam STREAM_OUT_TOTAL = IMAGE_WIDTH * (IMAGE_HEIGHT - N + 1) - (N - 1);
+    localparam STREAM_OUT_TOTAL = (IMAGE_WIDTH - N + 1) * (IMAGE_HEIGHT - N + 1);
     localparam STATE_WIDTH = 3;
     localparam NUM_TESTS = 300;  // random stimulus cycles
 
@@ -189,7 +189,8 @@ module tb_conv_fsm;
 
     // Reference block-valid: every pixel past the fill rows completes a
     // window, so the streaming valid covers border windows too
-    wire ref_block_valid = (ref_shifts_q / IMAGE_WIDTH >= N-1);
+    wire ref_block_valid = ((ref_shifts_q / IMAGE_WIDTH) >= N-1) &&
+                            ((ref_shifts_q % IMAGE_WIDTH) >= N-1);
 
     // Expected Moore outputs (combinational from the reference phase).
     // shift_valid is gated by the pixel stream: a deasserted valid stalls
