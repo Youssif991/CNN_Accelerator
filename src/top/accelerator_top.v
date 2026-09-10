@@ -104,7 +104,7 @@ module accelerator_top #(
     wire [OUT_WIDTH:0] fifo_rd_data;  // output FIFO read data {last, result}
 
     // Back-pressure: freeze the pipeline when a result cannot be delivered
-    assign output_stall = result_valid_p && !fifo_wr_ready;
+    assign output_stall = !fifo_wr_ready;
 
     // Frame-last flag: the last accepted pixel's result ends the frame
     reg last_q;
