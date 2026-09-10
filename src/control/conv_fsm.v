@@ -134,12 +134,16 @@ module conv_fsm #(
             end
             // Shift the stream and produce one output pixel per cycle.
             S_COMPUTE: begin
-                result_valid_d = block_valid && pixel_valid_i;
-                if (pix_last_i) begin
-                    exit_cnt_d = PIPE_STAGES + 2;
-                end else if (exit_cnt_q > 0) begin
-                    exit_cnt_d = exit_cnt_q - 1;
-                    if (exit_cnt_q == 1) state_d = S_DONE;
+                if (output_stall_i) begin
+                    result_valid_d = result_valid_q;
+                end else begin
+                    result_valid_d = block_valid && pixel_valid_i;
+                    if (pix_last_i && pixel_valid_i) begin
+                        exit_cnt_d = PIPE_STAGES + 2;
+                    end else if (exit_cnt_q > 0) begin
+                        exit_cnt_d = exit_cnt_q - 1;
+                        if (exit_cnt_q == 1) state_d = S_DONE;
+                    end
                 end
             end
             // Hold the done flag, then re-arm for the next frame
@@ -168,7 +172,8 @@ module conv_fsm #(
     assign kernel_addr_o = load_cnt_q;
     assign shift_valid_o = ((state_q == S_FILL) || (state_q == S_COMPUTE)) && pixel_valid_i &&
                            !output_stall_i;
-    assign ready_o = (state_q == S_FILL) || (state_q == S_COMPUTE);
+    assign ready_o = ((state_q == S_FILL) || (state_q == S_COMPUTE)) &&
+                     !output_stall_i;
     assign result_valid_o = result_valid_q;
     assign rst_count_o = (state_q == S_LOAD);
     assign busy_o = (state_q == S_LOAD) || (state_q == S_FILL) || (state_q == S_COMPUTE);
