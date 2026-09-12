@@ -118,7 +118,9 @@ module tb_accelerator_top;
         .PIXEL_WIDTH (PIXEL_WIDTH),
         .COEFF_WIDTH (COEFF_WIDTH),
         .OUT_WIDTH   (OUT_WIDTH),
-        .FRAC_BITS   (FRAC_BITS)
+        .FRAC_BITS   (FRAC_BITS),
+        .PIPE_STAGES (PIPE_STAGES),
+        .ROUND_ENABLE(ROUND_ENABLE)
     ) dut (
         .clk_i            (clk_i),
         .rst_n_i          (rst_n_i),
