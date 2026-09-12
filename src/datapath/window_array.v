@@ -10,10 +10,26 @@
 //              shifts in the incoming pixel stream and presents the window
 //              to the MAC array.
 //
+//              On a normal shift, every row shifts left and the newest column
+//              is loaded from data_row_i, exactly as before. On a row-start
+//              shift (shift_valid_i && row_start_i), the older N-1 columns of
+//              every row are cleared to zero instead of being shifted in --
+//              this gives every row of the image its own left zero-padding
+//              context for free (no extra stream cycles, so no periodic
+//              per-row gap in the downstream valid stream), since the
+//              line-buffer-delayed row streams otherwise carry the *previous*
+//              row's tail pixels into the first N-1 columns of the new row.
+//              row_start_i must pulse for exactly the first accepted column of
+//              every row (including row 0, where it is a harmless no-op since
+//              the window is already zero after reset).
+//
 // Dependencies: none (leaf module)
 //
 // Revision:
 // Revision 0.01 - File Created
+// Revision 0.02 - Added row_start_i: clears the older columns instead of
+//                  shifting in the previous row's tail, giving zero-cost,
+//                  gap-free horizontal zero-padding at every row boundary.
 // Additional Comments:
 //
 //////////////////////////////////////////////////////////////////////////////////
@@ -25,6 +41,7 @@ module window_array #(
     input wire clk_i,
     input wire rst_n_i,
     input wire shift_valid_i,
+    input wire row_start_i,  // Pulses on the first column of every row: flush instead of shift
     input wire [N*PIXEL_WIDTH-1:0] data_row_i,
     output wire [N*N*PIXEL_WIDTH-1:0] window_o
 );
@@ -48,8 +65,14 @@ module window_array #(
         end
         if (shift_valid_i) begin
             for (i = 0; i < N; i = i + 1) begin
-                for (j = 0; j < N - 1; j = j + 1) begin
-                    window_d[i][j] = window_q[i][j+1];  // shift the row left
+                if (row_start_i) begin
+                    for (j = 0; j < N - 1; j = j + 1) begin
+                        window_d[i][j] = {PIXEL_WIDTH{1'b0}};  // flush: zero left-padding for this row
+                    end
+                end else begin
+                    for (j = 0; j < N - 1; j = j + 1) begin
+                        window_d[i][j] = window_q[i][j+1];  // shift the row left
+                    end
                 end
                 window_d[i][N-1] = data_row_i[i*PIXEL_WIDTH +: PIXEL_WIDTH];  // new column pixel
             end
