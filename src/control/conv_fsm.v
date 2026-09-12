@@ -7,31 +7,46 @@
 // Module Name: conv_fsm
 // Tool Versions: Vivado 2025.2
 // Description: Frame controller for the convolution accelerator. Sequences
-//              kernel loading (LOAD), input-stream fill (FILL), the compute
-//              pass (COMPUTE) with one output pixel per cycle, and the done
-//              handoff. The kernel load is host-paced: LOAD advances one
-//              coefficient per kernel_wr_valid_i pulse. The pixel stream is
-//              gated by pixel_valid_i: a deasserted valid stalls the shift
-//              (line buffers, window, and address counters all hold), so the
+//              kernel loading (LOAD) and the compute pass (COMPUTE) with one
+//              output pixel per cycle, then the done handoff. The kernel load
+//              is host-paced: LOAD advances one coefficient per
+//              kernel_wr_valid_i pulse. The pixel stream is gated by
+//              pixel_valid_i: a deasserted valid stalls the shift (line
+//              buffers, window, and address counters all hold), so the
 //              pipeline stays synchronized under stalls. Outputs are Moore
 //              (state-derived); result_valid_o is registered to align with
 //              the combinational MAC result that settles one cycle after its
-//              window block completes. A result is only valid once the
-//              sliding window is fully inside the image on BOTH axes
-//              (row >= N-1 AND col >= N-1): the row-only gate previously
-//              here let the window straddle two rows for the first N-1
-//              columns of every row (reusing the tail pixels of the
-//              previous row instead of a true image window), producing
-//              IMAGE_WIDTH*(IMAGE_HEIGHT-N+1) spurious wraparound results
-//              instead of the intended (IMAGE_WIDTH-N+1)*(IMAGE_HEIGHT-N+1)
-//              valid-convolution count. The column gate fixes this.
+//              window block completes.
 //
-// Dependencies: none (drives the datapath and the address generators)
+//              IMAGE_HEIGHT here is the *padded* row count (real image rows
+//              plus the pixel_pad_inserter's leading zero-padding rows): the
+//              caller (accelerator_top) binds it to IMAGE_HEIGHT_real + N-1,
+//              not the real image height. A result is only valid once the
+//              sliding window has accumulated N-1 full padded rows of history
+//              (row >= N-1); no column gate is needed any more; because
+//              pixel_pad_inserter prepends real zero rows (so the row-delay
+//              line buffers hold genuine zeros, not garbage) and window_array
+//              flushes its older columns at the start of every row (see
+//              row_start_o below), every column of every row past the first
+//              N-1 padded rows is already a correctly zero-padded window --
+//              there is no longer a "straddles two rows" seam to exclude.
+//              This removes the FILL state entirely: LOAD transitions
+//              straight into COMPUTE, and the row gate alone suppresses the
+//              (one-time, not periodic) padding-row prefix.
+//
+// Dependencies: none (drives the datapath, pixel_pad_inserter, and window_array)
 //
 // Revision:
 // Revision 0.01 - File Created
 // Revision 0.02 - Added column gate to block_valid (fix row-boundary
 //                  wraparound window bug)
+// Revision 0.03 - Removed the column gate and the FILL state: IMAGE_HEIGHT
+//                  now denotes the padded row count, block_valid is a
+//                  row-only check, and row padding + the window's row-start
+//                  flush give a gap-free, zero-padded stream for free. Added
+//                  row_start_o (drives window_array's flush) and
+//                  stream_start_o (a one-cycle pulse on the LOAD->COMPUTE
+//                  transition, used to arm pixel_pad_inserter for the frame).
 // Additional Comments:
 //
 //////////////////////////////////////////////////////////////////////////////////
@@ -39,11 +54,11 @@
 module conv_fsm #(
     parameter N = 3,  // Kernel size (N >= 2)
     parameter IMAGE_WIDTH = 32,  // Input feature-map width
-    parameter IMAGE_HEIGHT = 32,  // Input feature-map height
+    parameter IMAGE_HEIGHT = 32,  // Padded row count (real rows + N-1 leading pad rows)
     parameter COEFF_WIDTH = 8,  // Kernel coefficient width
     parameter PIPE_STAGES = 0,  // Datapath pipeline delay (stages after the window)
     parameter PIX_ADDR_WIDTH = $clog2(IMAGE_WIDTH * IMAGE_HEIGHT),
-    parameter STATE_WIDTH = 3  // State encoding width
+    parameter STATE_WIDTH = 2  // State encoding width
 ) (
     input wire clk_i,
     input wire rst_n_i,
@@ -57,7 +72,9 @@ module conv_fsm #(
     output wire kernel_we_o,  // Kernel load write enable
     output wire [$clog2(N*N)-1:0] kernel_addr_o,  // Kernel load address
     output wire shift_valid_o,  // Shift the line buffers and the window
-    output wire ready_o,  // Accepting input pixels (FILL or COMPUTE, ungated)
+    output wire row_start_o,  // First column of a new row: flush window_array instead of shifting
+    output wire stream_start_o,  // One-cycle pulse on LOAD->COMPUTE: arms pixel_pad_inserter
+    output wire ready_o,  // Accepting input pixels (COMPUTE, ungated)
     output wire result_valid_o,  // Output pixel valid (pipeline aligned)
     output wire rst_count_o,  // Reset the address-generator counters
     output wire busy_o,  // Frame in progress
@@ -68,12 +85,8 @@ module conv_fsm #(
     // State encoding
     localparam S_IDLE = 0;
     localparam S_LOAD = 1;
-    localparam S_FILL = 2;
-    localparam S_COMPUTE = 3;
-    localparam S_DONE = 4;
-
-    // Fill cycles
-    localparam FILL_CYCLES = (N-1) * IMAGE_WIDTH + (N-1);
+    localparam S_COMPUTE = 2;
+    localparam S_DONE = 3;
 
     // Current state
     reg [STATE_WIDTH-1:0] state_q;
@@ -92,20 +105,17 @@ module conv_fsm #(
     // Result valid (next)
     reg result_valid_d;
 
-    // Row and column of the current input pixel
+    // Row and column of the current input pixel (padded coordinate system)
     wire [PIX_ADDR_WIDTH-1:0] pix_row = pix_addr_i / IMAGE_WIDTH;
     wire [PIX_ADDR_WIDTH-1:0] pix_col = pix_addr_i % IMAGE_WIDTH;
 
-    // ################### BUG #######################//
-    //-----------updated assumption------------------//
-    // problem : when testing an 8*8 image and kernel 3*3 
-    // expected output image is 6*6 (36 value) but we actually get 8*6 (48 value)
-    // and my assumption thus happens due to checking only rows non checking coloumns
-    //so i added this logic to fix the bug.
+    // A result is valid once N-1 full padded rows of history are behind us;
+    // window_array's row-start flush already makes every column correct.
+    wire block_valid = (pix_row >= N-1);
 
-    wire block_valid = (pix_row >= N-1) && (pix_col >= N-1); 
+    // The last cycle of LOAD (about to move to COMPUTE): arms the pad inserter.
+    wire load_done = (state_q == S_LOAD) && kernel_wr_valid_i && (load_cnt_q == N*N-1);
 
-//######################################################################//
     // Next-state
     always @(*) begin : next_state
         state_d = state_q;
@@ -122,17 +132,10 @@ module conv_fsm #(
             S_LOAD: begin
                 if (kernel_wr_valid_i) begin
                     load_cnt_d = (load_cnt_q == N*N-1) ? 0 : load_cnt_q + 1;
-                    ///################ BUG ################//
-                    if (load_cnt_q == N*N-1) state_d = S_FILL; //this state got stuck if the start and kernel_wr_valid_i is asserted on the same cycle
-                                                               // and it rely on the start signal should be asserted before kernel_wr_valid_i by at least one cycle
-                                                               
+                    if (load_cnt_q == N*N-1) state_d = S_COMPUTE;
                 end
             end
-            // Prime the line buffers and the window with the first rows
-            S_FILL: begin
-                if (pix_addr_i >= FILL_CYCLES-1) state_d = S_COMPUTE;
-            end
-            // Shift the stream and produce one output pixel per cycle.
+            // Shift the padded stream and produce one output pixel per cycle.
             S_COMPUTE: begin
                 if (output_stall_i) begin
                     result_valid_d = result_valid_q;
@@ -167,16 +170,17 @@ module conv_fsm #(
         end
     end
 
-    // Output decode (Moore)
+    // Output decode (Moore, except stream_start_o/load_done which are Mealy
+    // pulses on the LOAD->COMPUTE transition)
     assign kernel_we_o = (state_q == S_LOAD);
     assign kernel_addr_o = load_cnt_q;
-    assign shift_valid_o = ((state_q == S_FILL) || (state_q == S_COMPUTE)) && pixel_valid_i &&
-                           !output_stall_i;
-    assign ready_o = ((state_q == S_FILL) || (state_q == S_COMPUTE)) &&
-                     !output_stall_i;
+    assign shift_valid_o = (state_q == S_COMPUTE) && pixel_valid_i && !output_stall_i;
+    assign row_start_o = shift_valid_o && (pix_col == 0);
+    assign stream_start_o = load_done;
+    assign ready_o = (state_q == S_COMPUTE) && !output_stall_i;
     assign result_valid_o = result_valid_q;
     assign rst_count_o = (state_q == S_LOAD);
-    assign busy_o = (state_q == S_LOAD) || (state_q == S_FILL) || (state_q == S_COMPUTE);
+    assign busy_o = (state_q == S_LOAD) || (state_q == S_COMPUTE);
     assign done_o = (state_q == S_DONE);
     assign state_o = state_q;
 
