@@ -6,27 +6,38 @@
 // Design Name: CNN Convolution Accelerator - Top Level
 // Module Name: accelerator_top
 // Tool Versions: Vivado 2025.2
-// Description: Top level integrating the convolution datapath (line-buffer
-//              bank, window array, MAC array, adder tree, saturate/round),
-//              the frame controller, and the pixel counter with the streaming
-//              output FIFO. The host loads the kernel (host-paced, one
-//              coefficient per valid pulse), then pulses start_i; the input
-//              image streams in one 8-bit pixel per cycle (pixel_in_i /
-//              pixel_valid_i) and the accelerator produces one output word per
-//              accepted pixel (result_o / result_valid_o, gap-free, border
-//              windows included). A deasserted pixel_valid_i stalls the stream
-//              and a full output FIFO (result_ready_i deasserted) freezes the
-//              pipeline, so no result is lost; the counters and the sliding
-//              window hold, keeping the stream synchronized. result_tlast_o
-//              marks the frame's last word. The MAC-to-result chain is
-//              pipelined (PIPE_STAGES register stages) to raise Fmax; the
-//              result-valid flag shifts with the data. The N*N per-tap
-//              multipliers are DSP48E1s (dsp_mult_r4), whose P registers are
-//              pipeline stage 1. An optional ReLU activation (relu_en_i,
-//              host-set per frame) clamps negative outputs to zero before
-//              rounding in the saturate/round unit.
+// Description: Top level integrating the convolution datapath (row zero-pad
+//              inserter, line-buffer bank, window array, MAC array, adder
+//              tree, saturate/round), the frame controller, and the pixel
+//              counter with the streaming output FIFO. The host loads the
+//              kernel (host-paced, one coefficient per valid pulse), then
+//              pulses start_i; the input image streams in one 8-bit real
+//              pixel per cycle (pixel_in_i / pixel_valid_i, IMAGE_WIDTH x
+//              IMAGE_HEIGHT). Internally, pixel_pad_inserter prepends N-1
+//              zero rows (a one-time cost folded into the frame's initial
+//              latency) so the line-buffer delay lines hold genuine zeros,
+//              not garbage, above the image's top edge; window_array flushes
+//              its older columns at the start of every row (row_start_o from
+//              conv_fsm) so every column also gets correct zero-padding, at
+//              zero extra cycles. Together this produces a true "same
+//              convolution" (causal/trailing-anchored: output (r,c) uses the
+//              window ending at (r,c), not centered on it) with exactly one
+//              output word per accepted real pixel -- IMAGE_WIDTH x
+//              IMAGE_HEIGHT total, gap-free after the one-time row-priming
+//              latency, border windows included. A deasserted pixel_valid_i
+//              stalls the stream and a full output FIFO (result_ready_i
+//              deasserted) freezes the pipeline, so no result is lost; the
+//              counters and the sliding window hold, keeping the stream
+//              synchronized. result_tlast_o marks the frame's last word. The
+//              MAC-to-result chain is pipelined (PIPE_STAGES register stages)
+//              to raise Fmax; the result-valid flag shifts with the data. The
+//              N*N per-tap multipliers are DSP48E1s (dsp_mult_r4), whose P
+//              registers are pipeline stage 1. An optional ReLU activation
+//              (relu_en_i, host-set per frame) clamps negative outputs to
+//              zero before rounding in the saturate/round unit.
 //
-// Dependencies: conv_fsm (src/control/conv_fsm.v)
+// Dependencies: pixel_pad_inserter (src/datapath/pixel_pad_inserter.v)
+//               conv_fsm (src/control/conv_fsm.v)
 //               pixel_counter (src/control/pixel_counter.v)
 //               line_buffer_bank (src/datapath/line_buffer_bank.v)
 //               window_array (src/datapath/window_array.v)
@@ -38,6 +49,15 @@
 //
 // Revision:
 // Revision 0.01 - File Created
+// Revision 0.02 - Inserted pixel_pad_inserter ahead of the datapath and wired
+//                  window_array's row-start flush, switching the accelerator
+//                  from valid convolution ((W-N+1)x(H-N+1) outputs, N-1
+//                  column gaps every row) to a gap-free, zero-padded "same"
+//                  convolution (WxH outputs, one per accepted real pixel).
+//                  conv_fsm/pixel_counter are now sized to the padded row
+//                  count (IMAGE_HEIGHT + N-1); ready_o is now the inserter's
+//                  ready_o (the true host-facing handshake) instead of
+//                  conv_fsm's.
 // Additional Comments:
 //
 //////////////////////////////////////////////////////////////////////////////////
@@ -45,33 +65,35 @@
 module accelerator_top #(
     parameter N = 3,  // Kernel size (N >= 2)
     parameter IMAGE_WIDTH = 32,  // Input feature-map width
-    parameter IMAGE_HEIGHT = 32,  // Input feature-map height
+    parameter IMAGE_HEIGHT = 32,  // Input feature-map height (real rows)
     parameter PIXEL_WIDTH = 8,  // Input pixel width (unsigned)
     parameter COEFF_WIDTH = 8,  // Kernel coefficient width (signed)
     parameter OUT_WIDTH = 16,  // Output pixel width (signed)
     parameter ROUND_ENABLE = 1,  // Round-half-up before truncation
     parameter FRAC_BITS    = 4,   // number of fractional bit in the fixed_point kernel
     parameter PIPE_STAGES = 2,  // Pipeline stages after the window array
-    parameter PIX_ADDR_WIDTH = $clog2(IMAGE_WIDTH * IMAGE_HEIGHT),
+    parameter PAD_ROWS_BEFORE = N - 1,  // Zero rows prepended for top-edge same-padding
+    parameter PADDED_HEIGHT = IMAGE_HEIGHT + PAD_ROWS_BEFORE,  // Row count conv_fsm/pixel_counter see
+    parameter PIX_ADDR_WIDTH = $clog2(IMAGE_WIDTH * PADDED_HEIGHT),
     parameter PROD_WIDTH = PIXEL_WIDTH + COEFF_WIDTH + 2,
     parameter SUM_WIDTH = PROD_WIDTH + $clog2(N*N)
 ) (
     input wire clk_i,
     input wire rst_n_i,
     input wire start_i,  // Frame start pulse
-    input wire [PIXEL_WIDTH-1:0] pixel_in_i,  // Streaming input pixel data
+    input wire [PIXEL_WIDTH-1:0] pixel_in_i,  // Streaming input pixel data (real image only)
     input wire pixel_valid_i,  // Pixel valid (deasserted = stall)
     input wire kernel_wr_valid_i,  // Kernel coefficient write valid (host-paced)
     input wire [COEFF_WIDTH-1:0] kernel_wr_data_i,  // Kernel coefficient data
     input wire relu_en_i,  // ReLU enable (host-set per frame: clamp negatives to zero)
     output wire busy_o,  // Frame in progress
     output wire done_o,  // Frame complete
-    output wire [2:0] state_o,  // FSM state (observability)
+    output wire [1:0] state_o,  // FSM state (observability)
     output wire result_valid_o,  // Output word available (FIFO not empty)
     output wire [OUT_WIDTH-1:0] result_o,  // Output data (FIFO read)
     output wire result_tlast_o,  // Last output word of the frame
     input wire result_ready_i,  // Output ready
-    output wire ready_o  // Accepting input pixels (FILL/COMPUTE) - AXI-Stream TREADY
+    output wire ready_o  // Accepting input pixels (real rows only) - AXI-Stream TREADY
 );
 
     // Control-unit interconnect
@@ -80,9 +102,15 @@ module accelerator_top #(
     wire kernel_we;
     wire [$clog2(N*N)-1:0] kernel_addr;
     wire shift_valid;
-    wire ready;
+    wire row_start;  // First column of a new row: flush window_array instead of shifting
+    wire stream_start;  // One-cycle pulse: arms pixel_pad_inserter for the frame
+    wire fsm_ready;  // conv_fsm's own readiness (gates the pad inserter, excludes pixel_valid_i)
     wire result_valid;
     wire rst_count;
+
+    // Pad-inserter interconnect
+    wire [PIXEL_WIDTH-1:0] padded_pixel;
+    wire padded_pixel_valid;
 
     // Datapath interconnect
     wire [N*PIXEL_WIDTH-1:0] row_streams;
@@ -196,20 +224,45 @@ module accelerator_top #(
     assign result_o       = fifo_rd_data[OUT_WIDTH-1:0];
     assign result_tlast_o = fifo_rd_data[OUT_WIDTH];
 
+    // Row zero-pad inserter: prepends PAD_ROWS_BEFORE = N-1 real zero rows
+    // ahead of the host's real image so the line buffers (reset-free SRLs)
+    // hold genuine zeros above the top edge, not garbage. en_i excludes
+    // pixel_valid_i (fsm_ready alone) to avoid a combinational loop, since
+    // conv_fsm's own pixel_valid_i input is this module's padded_pixel_valid_o.
+    pixel_pad_inserter #(
+        .IMAGE_WIDTH    (IMAGE_WIDTH),
+        .IMAGE_HEIGHT   (IMAGE_HEIGHT),
+        .PIXEL_WIDTH    (PIXEL_WIDTH),
+        .PAD_ROWS_BEFORE(PAD_ROWS_BEFORE),
+        .PAD_ROWS_AFTER (0)
+    ) u_pixel_pad_inserter (
+        .clk_i               (clk_i),
+        .rst_n_i             (rst_n_i),
+        .en_i                (fsm_ready),
+        .start_i             (stream_start),
+        .pixel_in_i          (pixel_in_i),
+        .pixel_valid_i       (pixel_valid_i),
+        .padded_pixel_o      (padded_pixel),
+        .padded_pixel_valid_o(padded_pixel_valid),
+        .ready_o             (ready_o),
+        .real_pixel_o        (),
+        .last_pixel_o        ()
+    );
+
     // Frame controller
     conv_fsm #(
         .N             (N),
         .IMAGE_WIDTH   (IMAGE_WIDTH),
-        .IMAGE_HEIGHT  (IMAGE_HEIGHT),
+        .IMAGE_HEIGHT  (PADDED_HEIGHT),
         .COEFF_WIDTH   (COEFF_WIDTH),
         .PIPE_STAGES   (PIPE_STAGES),
         .PIX_ADDR_WIDTH(PIX_ADDR_WIDTH),
-        .STATE_WIDTH   (3)
+        .STATE_WIDTH   (2)
     ) u_fsm (
         .clk_i           (clk_i),
         .rst_n_i         (rst_n_i),
         .start_i         (start_i),
-        .pixel_valid_i   (pixel_valid_i),
+        .pixel_valid_i   (padded_pixel_valid),
         .output_stall_i  (output_stall),
         .kernel_wr_valid_i(kernel_wr_valid_i),
         .kernel_data_i   (kernel_wr_data_i),
@@ -218,7 +271,9 @@ module accelerator_top #(
         .kernel_we_o     (kernel_we),
         .kernel_addr_o   (kernel_addr),
         .shift_valid_o   (shift_valid),
-        .ready_o         (ready_o),
+        .row_start_o     (row_start),
+        .stream_start_o  (stream_start),
+        .ready_o         (fsm_ready),
         .result_valid_o  (result_valid),
         .rst_count_o     (rst_count),
         .busy_o          (busy_o),
@@ -226,10 +281,10 @@ module accelerator_top #(
         .state_o         (state_o)
     );
 
-    // Pixel position counter (input)
+    // Pixel position counter (input), sized to the padded row count
     pixel_counter #(
         .IMAGE_WIDTH (IMAGE_WIDTH),
-        .IMAGE_HEIGHT(IMAGE_HEIGHT),
+        .IMAGE_HEIGHT(PADDED_HEIGHT),
         .ADDR_WIDTH  (PIX_ADDR_WIDTH)
     ) u_in (
         .clk_i       (clk_i),
@@ -248,7 +303,7 @@ module accelerator_top #(
     ) u_line_buffer_bank (
         .clk_i         (clk_i),
         .shift_valid_i (shift_valid),
-        .pixel_in_i    (pixel_in_i),
+        .pixel_in_i    (padded_pixel),
         .row_streams_o (row_streams)
     );
 
@@ -269,6 +324,7 @@ module accelerator_top #(
         .clk_i         (clk_i),
         .rst_n_i       (rst_n_i),
         .shift_valid_i (shift_valid),
+        .row_start_i   (row_start),
         .data_row_i    (window_data),
         .window_o      (window)
     );

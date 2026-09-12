@@ -31,18 +31,7 @@
 //                  mapping to match the design's column-gated output (both
 //                  row and col >= N-1). Added output_stall condition to the
 //                  gap_check to avoid false errors during back-pressure.
-// Revision 0.04 - Reconfigured to N=5 / 8x8 to match the UVM/SystemVerilog
-//                  testbench (src/tb/conv_top.sv + conv_pack.svh), and
-//                  explicitly passed ROUND_ENABLE/PIPE_STAGES to the DUT so
-//                  the configuration is unambiguous. Added a directed test
-//                  that loads the same kernel_coeff.hex/pixel_input.hex
-//                  vectors the UVM sequence uses and checks the stream
-//                  against expected_output.hex (also mirrored to
-//                  dut_output.hex), so this testbench and the SystemVerilog
-//                  one verify the identical DUT config and golden dataset.
-//                  Rescaled the stall/gap cadences of the other directed
-//                  tests to the smaller 64-pixel frame. Self-checking
-//                  procedural style is unchanged.
+//
 // Additional Comments:
 //
 //////////////////////////////////////////////////////////////////////////////////
@@ -63,8 +52,10 @@ module tb_accelerator_top;
     localparam TOTAL_PIXELS = IMAGE_WIDTH * IMAGE_HEIGHT;
     localparam PIX_ADDR_WIDTH = $clog2(TOTAL_PIXELS);
 
-    localparam OUT_W = IMAGE_WIDTH - N + 1;
-    localparam OUT_H = IMAGE_HEIGHT - N + 1;
+    // Same convolution now (row zero-padding + window row-start flush): the
+    // output covers the full image, one word per accepted real pixel.
+    localparam OUT_W = IMAGE_WIDTH;
+    localparam OUT_H = IMAGE_HEIGHT;
     localparam STREAM_OUT_TOTAL = OUT_W * OUT_H;
 
     localparam PROD_WIDTH = PIXEL_WIDTH + COEFF_WIDTH + 2;
@@ -89,7 +80,7 @@ module tb_accelerator_top;
     wire result_valid_o;
     wire [OUT_WIDTH-1:0] result_o;
     wire result_tlast_o;
-    wire [2:0] state_o;
+    wire [1:0] state_o;
 
     // Test infrastructure
     integer errors = 0;
@@ -164,6 +155,20 @@ module tb_accelerator_top;
                              $time, stream_idx);
                 end else begin
                     stream_out[stream_idx] = result_o;
+
+                    // One line per accepted output word.
+                    $display("OUT t=%0t  frame=%0d  idx=%0d  (r=%0d,c=%0d)  data=%0d  tlast=%b",
+                             $time,
+                             frame_number,
+                             stream_idx,
+                             stream_idx / OUT_W,
+                             stream_idx % OUT_W,
+                             $signed(result_o),
+                             result_tlast_o);
+
+                    if (result_tlast_o)
+                        frame_number = frame_number + 1;
+
                     stream_idx = stream_idx + 1;
                 end
             end
@@ -322,12 +327,22 @@ module tb_accelerator_top;
         end
     endtask
 
-    // Task: check the accepted stream against the valid-window reference model.
+    // Task: check the accepted stream against the zero-padded, causal/
+    // trailing-anchored "same convolution" reference model. Output (row,col)
+    // is the window ending at (row,col) -- rows [row-N+1,row], cols
+    // [col-N+1,col] -- with any tap that falls above the top edge or left of
+    // the left edge (negative real coordinate) substituted with a zero pixel,
+    // matching pixel_pad_inserter's row padding and window_array's row-start
+    // column flush. No tap ever falls past the bottom/right edge, since the
+    // window only ever looks backward.
     task check_stream;
         integer a;
         integer row;
         integer col;
         integer tap;
+        integer tap_row;
+        integer tap_col;
+        reg [PIXEL_WIDTH-1:0] tap_pixel;
         begin
             if (stream_idx != STREAM_OUT_TOTAL)
                 $display("WARN t=%0t: captured %0d output words, expected %0d",
@@ -337,10 +352,13 @@ module tb_accelerator_top;
                 row = a / OUT_W;
                 col = a % OUT_W;
                 ref_sum = 0;
-                for (tap = 0; tap < N * N; tap = tap + 1)
-                    ref_sum = ref_sum +
-                              $signed({1'b0, ref_img[(row + tap / N) * IMAGE_WIDTH +
-                                                     col + tap % N]}) * ref_kernel[tap];
+                for (tap = 0; tap < N * N; tap = tap + 1) begin
+                    tap_row = row - (N - 1) + (tap / N);
+                    tap_col = col - (N - 1) + (tap % N);
+                    tap_pixel = (tap_row < 0 || tap_col < 0) ? 8'd0 :
+                                ref_img[tap_row * IMAGE_WIDTH + tap_col];
+                    ref_sum = ref_sum + $signed({1'b0, tap_pixel}) * ref_kernel[tap];
+                end
 
                 if (relu_en_i && (ref_sum < 0))
                     ref_sum = 0;
@@ -500,8 +518,8 @@ module tb_accelerator_top;
 
     // Live monitor: prints signal values on every change
     initial begin : monitor
-        $monitor("Time=%0t | state=%0d busy=%b done=%b | out words=%0d", $time,
-                 state_o, busy_o, done_o, stream_idx);
+        $monitor("t=%0t | state=%0d busy=%b done=%b",
+                 $time, state_o, busy_o, done_o);
     end
 
     // VCD dump for waveform debugging

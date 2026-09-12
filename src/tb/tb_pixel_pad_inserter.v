@@ -3,24 +3,31 @@
 // Engineer: Youssef
 //
 // Create Date: 09/12/2026
-// Design Name: CNN Convolution Accelerator - Zero-Padding Stream Inserter Testbench
+// Design Name: CNN Convolution Accelerator - Row Zero-Padding Stream Inserter Testbench
 // Module Name: tb_pixel_pad_inserter
 // Tool Versions: Vivado 2025.2
-// Description: Self-checking testbench for the zero-padding stream inserter.
-//              A golden reference independently mirrors the padded raster
-//              scan (its own row/col/active counters, not the DUT's) and
+// Description: Self-checking testbench for the row-only zero-padding stream
+//              inserter. A golden reference independently mirrors the padded
+//              raster scan (its own row/col/active counters, not the DUT's) and
 //              registers the same four outputs one cycle behind the accepted
-//              position; the checker compares every output on negedge for
-//              the entire simulation. Covers reset, a full continuous frame
-//              (exact padded/real/ready/last pulse counts), host stalls
-//              during the real-pixel region, a system pause (en_i low)
-//              spanning both padding and real positions, a mid-frame
-//              restart, back-to-back frames, and randomized stimulus.
+//              position, only while en_i is high; the checker compares every
+//              output on negedge for the entire simulation. Covers reset, a full
+//              continuous frame with both leading and trailing padding rows
+//              (exact padded/real/ready/last pulse counts), host stalls during
+//              the real-row region, a system pause (en_i low) spanning both
+//              padding and real rows, an explicit backpressure-hold check (a
+//              pending word must stay bit-identical while en_i is low, even if
+//              the host's pixel_in_i/pixel_valid_i change underneath it), a
+//              mid-frame restart, back-to-back frames, and randomized stimulus.
 //
 // Dependencies: pixel_pad_inserter (src/datapath/pixel_pad_inserter.v)
 //
 // Revision:
 // Revision 0.01 - File Created
+// Revision 0.02 - Reworked for the row-only padding interface (PAD_ROWS_BEFORE/
+//                  PAD_ROWS_AFTER replace PAD_BEFORE/PAD_AFTER) and the en_i
+//                  clock-enable hold fix; added a dedicated backpressure-hold
+//                  directed test targeting that fix specifically.
 // Additional Comments:
 //
 //////////////////////////////////////////////////////////////////////////////////
@@ -31,13 +38,12 @@ module tb_pixel_pad_inserter;
     localparam IMAGE_WIDTH = 32;
     localparam IMAGE_HEIGHT = 32;
     localparam PIXEL_WIDTH = 8;
-    localparam PAD_BEFORE = 1;
-    localparam PAD_AFTER = 1;
-    localparam PADDED_WIDTH = IMAGE_WIDTH + PAD_BEFORE + PAD_AFTER;
-    localparam PADDED_HEIGHT = IMAGE_HEIGHT + PAD_BEFORE + PAD_AFTER;
+    localparam PAD_ROWS_BEFORE = 2;
+    localparam PAD_ROWS_AFTER = 1;
+    localparam PADDED_HEIGHT = IMAGE_HEIGHT + PAD_ROWS_BEFORE + PAD_ROWS_AFTER;
     localparam ROW_BITS = $clog2(PADDED_HEIGHT);
-    localparam COL_BITS = $clog2(PADDED_WIDTH);
-    localparam TOTAL_PADDED = PADDED_WIDTH * PADDED_HEIGHT;
+    localparam COL_BITS = $clog2(IMAGE_WIDTH);
+    localparam TOTAL_PADDED = PADDED_HEIGHT * IMAGE_WIDTH;
     localparam TOTAL_REAL = IMAGE_WIDTH * IMAGE_HEIGHT;
     localparam NUM_TESTS = 500;  // random stimulus cycles
 
@@ -62,14 +68,16 @@ module tb_pixel_pad_inserter;
     integer real_count;  // real_pixel_o pulses observed
     integer ready_count;  // ready_o pulses observed
     integer last_count;  // last_pixel_o pulses observed
+    reg [PIXEL_WIDTH-1:0] snap_pixel;  // snapshot for the backpressure-hold test
+    reg snap_valid;
 
     // Module instantiation
     pixel_pad_inserter #(
-        .IMAGE_WIDTH (IMAGE_WIDTH),
-        .IMAGE_HEIGHT(IMAGE_HEIGHT),
-        .PIXEL_WIDTH (PIXEL_WIDTH),
-        .PAD_BEFORE  (PAD_BEFORE),
-        .PAD_AFTER   (PAD_AFTER)
+        .IMAGE_WIDTH     (IMAGE_WIDTH),
+        .IMAGE_HEIGHT    (IMAGE_HEIGHT),
+        .PIXEL_WIDTH     (PIXEL_WIDTH),
+        .PAD_ROWS_BEFORE (PAD_ROWS_BEFORE),
+        .PAD_ROWS_AFTER  (PAD_ROWS_AFTER)
     ) dut (
         .clk_i               (clk_i),
         .rst_n_i             (rst_n_i),
@@ -91,8 +99,8 @@ module tb_pixel_pad_inserter;
     end
 
     // Golden reference: independent raster-scan mirror of the padded frame
-    // (its own row/col/active counters, covering the same PAD_BEFORE/
-    // PAD_AFTER geometry as the DUT, but computed separately here).
+    // (its own row/col/active counters, covering the same PAD_ROWS_BEFORE/
+    // PAD_ROWS_AFTER geometry as the DUT, but computed separately here).
     reg [ROW_BITS-1:0] ref_row_q;
     reg [COL_BITS-1:0] ref_col_q;
     reg ref_active_q;
@@ -101,15 +109,12 @@ module tb_pixel_pad_inserter;
     reg expected_real_pixel;
     reg expected_last_pixel;
 
-    wire ref_is_real_row = (ref_row_q >= PAD_BEFORE) && (ref_row_q < (IMAGE_HEIGHT + PAD_BEFORE));
-    wire ref_is_real_col = (ref_col_q >= PAD_BEFORE) && (ref_col_q < (IMAGE_WIDTH + PAD_BEFORE));
-    wire ref_is_real = ref_is_real_row && ref_is_real_col;
+    wire ref_is_real_row = (ref_row_q >= PAD_ROWS_BEFORE) &&
+                           (ref_row_q < (IMAGE_HEIGHT + PAD_ROWS_BEFORE));
     wire ref_last_row = (ref_row_q == (PADDED_HEIGHT - 1));
-    wire ref_last_col = (ref_col_q == (PADDED_WIDTH - 1));
-    wire ref_advance = ref_active_q && en_i && (ref_is_real ? pixel_valid_i : 1'b1);
-    wire ref_last_pixel = ref_advance && ref_is_real &&
-                          (ref_row_q == (IMAGE_HEIGHT + PAD_BEFORE - 1)) &&
-                          (ref_col_q == (IMAGE_WIDTH  + PAD_BEFORE - 1));
+    wire ref_last_col = (ref_col_q == (IMAGE_WIDTH - 1));
+    wire ref_advance = ref_active_q && en_i && (ref_is_real_row ? pixel_valid_i : 1'b1);
+    wire ref_last_pixel = ref_advance && ref_last_row && ref_last_col;
 
     always @(posedge clk_i or negedge rst_n_i) begin : reference
         if (!rst_n_i) begin
@@ -123,7 +128,7 @@ module tb_pixel_pad_inserter;
         end else begin
             // Counter update: start_i always wins and (re)arms the raster;
             // otherwise advance only while active, enabled, and (for a real
-            // position) the host presents a valid pixel.
+            // row) the host presents a valid pixel.
             if (start_i) begin
                 ref_row_q <= 0;
                 ref_col_q <= 0;
@@ -138,11 +143,15 @@ module tb_pixel_pad_inserter;
                 end
             end
 
-            // Registered outputs, one cycle behind the accepted position.
-            expected_pad_valid <= ref_advance;
-            expected_pad_pixel <= ref_is_real ? pixel_in_i : {PIXEL_WIDTH{1'b0}};
-            expected_real_pixel <= ref_advance && ref_is_real;
-            expected_last_pixel <= ref_last_pixel;
+            // Registered outputs, one cycle behind the accepted position,
+            // held (not overwritten) whenever the consumer isn't taking this
+            // cycle's word (en_i low) -- the exact fix under test.
+            if (en_i) begin
+                expected_pad_valid <= ref_advance;
+                expected_pad_pixel <= ref_is_real_row ? pixel_in_i : {PIXEL_WIDTH{1'b0}};
+                expected_real_pixel <= ref_advance && ref_is_real_row;
+                expected_last_pixel <= ref_last_pixel;
+            end
         end
     end
 
@@ -150,7 +159,7 @@ module tb_pixel_pad_inserter;
     // reference state), unlike the other four registered outputs above.
     reg expected_ready;
     always @(*) begin : flags
-        expected_ready = ref_active_q && en_i && ref_is_real;
+        expected_ready = ref_active_q && en_i && ref_is_real_row;
     end
 
     // Checker
@@ -214,9 +223,10 @@ module tb_pixel_pad_inserter;
         end
 
         // Directed test 2: a full frame with continuous host valid (no
-        // stalls). Every padded position must be produced exactly once,
-        // every real position accepted exactly once, and last_pixel_o must
-        // pulse exactly once at the final real position.
+        // stalls). Every padded position (leading pad rows + real rows +
+        // trailing pad rows) must be produced exactly once, every real
+        // position accepted exactly once, and last_pixel_o must pulse
+        // exactly once at the final padded position.
         pad_valid_count = 0;
         real_count = 0;
         ready_count = 0;
@@ -252,10 +262,10 @@ module tb_pixel_pad_inserter;
             $display("FAIL t=%0t: last_pixel pulses=%0d expected 1", $time, last_count);
         end
 
-        // Directed test 3: host stalls during the real-pixel region.
+        // Directed test 3: host stalls during the real-row region.
         // Deassert pixel_valid_i for 2 out of every 10 cycles across the
         // whole frame; a stall only holds the raster while positioned on a
-        // real pixel (padding positions never sample pixel_valid_i).
+        // real row (padding rows never sample pixel_valid_i).
         real_count = 0;
         last_count = 0;
         cycle_cnt = 0;
@@ -283,7 +293,7 @@ module tb_pixel_pad_inserter;
         pixel_valid_i = 1;
 
         // Directed test 4: system pause (en_i deasserted) spanning both the
-        // padding and real regions. The raster must hold completely while
+        // padding and real rows. The raster must hold completely while
         // paused and resume exactly where it left off once en_i returns.
         real_count = 0;
         last_count = 0;
@@ -293,11 +303,16 @@ module tb_pixel_pad_inserter;
         repeat (2 * TOTAL_PADDED) begin
             @(negedge clk_i);
             start_i = 0;
+            // Count using the en_i value that was in effect during the
+            // posedge that just produced the current real_pixel_o/
+            // last_pixel_o, i.e. before it's changed below for the next
+            // cycle. A held word stays high for extra cycles while paused
+            // (en_i low) and must not be double-counted.
+            if (real_pixel_o && en_i) real_count = real_count + 1;
+            if (last_pixel_o && en_i) last_count = last_count + 1;
             cycle_cnt = cycle_cnt + 1;
             en_i = ((cycle_cnt % 50) < 3) ? 1'b0 : 1'b1;  // pause 3 of every 50 cycles
             pixel_in_i = pixel_in_i + 1'b1;
-            if (real_pixel_o) real_count = real_count + 1;
-            if (last_pixel_o) last_count = last_count + 1;
         end
 
         if (real_count !== TOTAL_REAL) begin
@@ -311,7 +326,59 @@ module tb_pixel_pad_inserter;
         end
         en_i = 1;
 
-        // Directed test 5: mid-frame restart. Re-assert start_i partway
+        // Directed test 5: backpressure hold. Once a word is pending
+        // (padded_pixel_valid_o = 1) and en_i drops, that exact word --
+        // both padded_pixel_o and padded_pixel_valid_o -- must stay
+        // bit-identical for as long as en_i is low, even if the host
+        // changes pixel_in_i/pixel_valid_i underneath it. This targets the
+        // Rev 0.02 fix directly (previously the pending word was silently
+        // cleared to invalid one cycle after en_i dropped).
+        start_i = 1;
+        @(negedge clk_i);
+        start_i = 0;
+        pixel_valid_i = 1;
+        // Run a few cycles into the real-row region so a real word is
+        // pending, then snapshot it and pause.
+        repeat (PAD_ROWS_BEFORE * IMAGE_WIDTH + 3) @(negedge clk_i);
+        if (padded_pixel_valid_o !== 1'b1) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: expected a pending word before the hold test", $time);
+        end
+        snap_pixel = padded_pixel_o;
+        snap_valid = padded_pixel_valid_o;
+
+        en_i = 0;
+        for (i = 0; i < 6; i = i + 1) begin
+            @(negedge clk_i);
+            // Wiggle the host side to prove it cannot disturb the held word.
+            pixel_in_i = $urandom;
+            pixel_valid_i = $urandom & 1;
+            if (padded_pixel_o !== snap_pixel) begin
+                errors = errors + 1;
+                $display("FAIL t=%0t: held pixel changed to %0d, expected %0d", $time,
+                         padded_pixel_o, snap_pixel);
+            end
+            if (padded_pixel_valid_o !== snap_valid) begin
+                errors = errors + 1;
+                $display("FAIL t=%0t: held valid changed to %b, expected %b", $time,
+                         padded_pixel_valid_o, snap_valid);
+            end
+        end
+        pixel_valid_i = 1;
+        en_i = 1;
+        // Let the frame finish out normally after the hold releases.
+        last_count = 0;
+        repeat (TOTAL_PADDED) begin
+            @(negedge clk_i);
+            pixel_in_i = pixel_in_i + 1'b1;
+            if (last_pixel_o) last_count = last_count + 1;
+        end
+        if (last_count !== 1) begin
+            errors = errors + 1;
+            $display("FAIL t=%0t: post-hold frame last pulses=%0d expected 1", $time, last_count);
+        end
+
+        // Directed test 6: mid-frame restart. Re-assert start_i partway
         // through a frame; the interrupted frame must be discarded and a
         // fresh one started cleanly (the continuous checker above validates
         // this cycle-by-cycle since the reference applies the same
@@ -333,7 +400,7 @@ module tb_pixel_pad_inserter;
             $display("FAIL t=%0t: restarted frame last pulses=%0d expected 1", $time, last_count);
         end
 
-        // Directed test 6: back-to-back frames complete cleanly with no
+        // Directed test 7: back-to-back frames complete cleanly with no
         // reset in between.
         for (i = 0; i < 2; i = i + 1) begin
             last_count = 0;
