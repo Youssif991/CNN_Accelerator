@@ -8,19 +8,27 @@
 // Tool Versions: Vivado 2025.2
 // Description: Self-checking testbench for the convolution frame controller
 //              wired together with the input pixel counter (the control unit
-//              as integrated in the accelerator top). A golden reference
-//              models the frame phases with its own shift counter (independent
-//              of the DUT's counter); the checker compares every FSM output on
-//              negedge. Covers reset, a full frame with exact cycle counts, a
-//              second frame, pixel-stream stalls (pixel_valid_i deasserted),
-//              output back-pressure (output_stall_i), and randomized start-
-//              request stimulus.
+//              as integrated in the accelerator top). IMAGE_HEIGHT here is the
+//              *padded* row count (real rows + N pad rows), matching conv_fsm's
+//              contract now that pixel_pad_inserter writes the zero rows and
+//              row_buffer_bank derives the column borders upstream. A golden
+//              reference models the frame phases with its own shift counter
+//              (independent of the DUT's counter); the checker compares every FSM
+//              output (including stream_start_o) on negedge.
+//              Covers reset, a full frame with exact cycle counts, a second
+//              frame, pixel-stream stalls (pixel_valid_i deasserted), output
+//              back-pressure (output_stall_i), and randomized start-request
+//              stimulus.
 //
 // Dependencies: conv_fsm (src/control/conv_fsm.v)
 //               pixel_counter (src/control/pixel_counter.v)
 //
 // Revision:
 // Revision 0.01 - File Created
+// Revision 0.03 - Retargeted at the centred-window contract: the padded row
+//                  count is real rows + N and block_valid opens at padded row N.
+//                  row_start_o is gone from conv_fsm (row_buffer_bank derives the
+//                  borders from the pixel column), so its check was removed.
 // Additional Comments:
 //
 //////////////////////////////////////////////////////////////////////////////////
@@ -30,15 +38,14 @@ module tb_conv_fsm;
     // Parameters
     localparam N = 3;
     localparam IMAGE_WIDTH = 32;
-    localparam IMAGE_HEIGHT = 32;
+    localparam IMAGE_HEIGHT = 32 + N;  // padded row count (real 32 + N pad rows)
     localparam COEFF_WIDTH = 8;
     localparam PIX_ADDR_WIDTH = $clog2(IMAGE_WIDTH * IMAGE_HEIGHT);
-    localparam FILL_CYCLES = (N-1) * IMAGE_WIDTH + (N-1);
     localparam TOTAL_PIXELS = IMAGE_WIDTH * IMAGE_HEIGHT;
-    // Streamed outputs per frame: every accepted pixel past the fill rows
-    // (includes the N-1 border windows per row)
-    localparam STREAM_OUT_TOTAL = (IMAGE_WIDTH - N + 1) * (IMAGE_HEIGHT - N + 1);
-    localparam STATE_WIDTH = 3;
+    // Streamed outputs per frame: one per real image pixel (rows past the N
+    // padding-row prefix), gap-free thanks to the row-buffer window bank.
+    localparam STREAM_OUT_TOTAL = (IMAGE_HEIGHT - N) * IMAGE_WIDTH;
+    localparam STATE_WIDTH = 2;
     localparam NUM_TESTS = 300;  // random stimulus cycles
 
     // DUT interface
@@ -52,6 +59,7 @@ module tb_conv_fsm;
     wire kernel_we_o;
     wire [$clog2(N*N)-1:0] kernel_addr_o;
     wire shift_valid_o;
+    wire stream_start_o;
     wire ready_o;
     wire result_valid_o;
     wire rst_count_o;
@@ -95,6 +103,7 @@ module tb_conv_fsm;
         .kernel_we_o   (kernel_we_o),
         .kernel_addr_o (kernel_addr_o),
         .shift_valid_o (shift_valid_o),
+        .stream_start_o(stream_start_o),
         .ready_o       (ready_o),
         .result_valid_o(result_valid_o),
         .rst_count_o   (rst_count_o),
@@ -127,9 +136,8 @@ module tb_conv_fsm;
     // address generators), so counter or FSM bugs cannot be copied.
     localparam PH_IDLE = 0;
     localparam PH_LOAD = 1;
-    localparam PH_FILL = 2;
-    localparam PH_COMPUTE = 3;
-    localparam PH_DONE = 4;
+    localparam PH_COMPUTE = 2;
+    localparam PH_DONE = 3;
 
     reg [STATE_WIDTH-1:0] ref_phase_q;
     reg [PIX_ADDR_WIDTH-1:0] ref_shifts_q;  // pixels shifted so far
@@ -145,13 +153,21 @@ module tb_conv_fsm;
             ref_exit_q <= 0;
             expected_result_valid <= 1'b0;
         end else begin
+            // Default: no result this cycle unless PH_COMPUTE overrides it
+            // below (mirrors the DUT's result_valid_d = 1'b0 default before
+            // its case statement).
+            expected_result_valid <= 1'b0;
+
             // Shift counter: restart at frame start, count only accepted pixels
             // (a deasserted pixel_valid_i stalls the stream without shifting)
             if (rst_count_o) begin
                 ref_shifts_q <= 0;
-            end else if (((ref_phase_q == PH_FILL) || (ref_phase_q == PH_COMPUTE)) &&
-                         pixel_valid_i) begin
-                ref_shifts_q <= ref_shifts_q + 1;
+            end else if ((ref_phase_q == PH_COMPUTE) && pixel_valid_i && !output_stall_i) begin
+                // Wraps exactly like the real pixel_counter: the 2-cycle exit
+                // drain keeps shifting (pixel_valid_i stays high) past the
+                // last real pixel, so this must wrap back to 0 too, or
+                // block_valid would incorrectly stay true during the drain.
+                ref_shifts_q <= (ref_shifts_q == TOTAL_PIXELS-1) ? 0 : ref_shifts_q + 1;
             end
 
             case (ref_phase_q)
@@ -163,21 +179,21 @@ module tb_conv_fsm;
                 PH_LOAD: begin
                     if (kernel_wr_valid_i) begin
                         ref_load_q <= (ref_load_q == N*N-1) ? 0 : ref_load_q + 1;
-                        if (ref_load_q == N*N-1) ref_phase_q <= PH_FILL;
+                        if (ref_load_q == N*N-1) ref_phase_q <= PH_COMPUTE;
                     end
                 end
-                // Prime the line buffers and the window with the first rows
-                PH_FILL: begin
-                    if (ref_shifts_q == FILL_CYCLES-1) ref_phase_q <= PH_COMPUTE;
-                end
-                // Shift the stream and produce one output pixel per cycle
+                // Shift the padded stream and produce one output pixel per cycle
                 PH_COMPUTE: begin
-                    expected_result_valid <= ref_block_valid && pixel_valid_i;
-                    if (ref_shifts_q == TOTAL_PIXELS-1) begin
-                        ref_exit_q <= 2;
-                    end else if (ref_exit_q > 0) begin
-                        ref_exit_q <= ref_exit_q - 1;
-                        if (ref_exit_q == 1) ref_phase_q <= PH_DONE;
+                    if (output_stall_i) begin
+                        expected_result_valid <= expected_result_valid;  // hold (matches result_valid_d = result_valid_q)
+                    end else begin
+                        expected_result_valid <= ref_block_valid && pixel_valid_i;
+                        if (ref_shifts_q == TOTAL_PIXELS-1) begin
+                            ref_exit_q <= 2;
+                        end else if (ref_exit_q > 0) begin
+                            ref_exit_q <= ref_exit_q - 1;
+                            if (ref_exit_q == 1) ref_phase_q <= PH_DONE;
+                        end
                     end
                 end
                 // Hold the done flag, then re-arm for the next frame
@@ -187,21 +203,21 @@ module tb_conv_fsm;
         end
     end
 
-    // Reference block-valid: every pixel past the fill rows completes a
-    // window, so the streaming valid covers border windows too
-    wire ref_block_valid = ((ref_shifts_q / IMAGE_WIDTH) >= N-1) &&
-                            ((ref_shifts_q % IMAGE_WIDTH) >= N-1);
+    // Reference block-valid: row-only gate, using the padded row count. The
+    // window bank centres the window on real row w-N, so results start at
+    // padded row N; the bank's own border muxes handle every column.
+    wire ref_block_valid = ((ref_shifts_q / IMAGE_WIDTH) >= N);
 
     // Expected Moore outputs (combinational from the reference phase).
     // shift_valid is gated by the pixel stream: a deasserted valid stalls
     // the datapath (line buffers, window, address counters).
     wire expected_kernel_we = (ref_phase_q == PH_LOAD);
-    wire expected_ready = (ref_phase_q == PH_FILL) || (ref_phase_q == PH_COMPUTE);
-    wire expected_shift_valid =
-        ((ref_phase_q == PH_FILL) || (ref_phase_q == PH_COMPUTE)) && pixel_valid_i &&
-        !output_stall_i;
+    wire expected_ready = (ref_phase_q == PH_COMPUTE) && !output_stall_i;
+    wire expected_shift_valid = (ref_phase_q == PH_COMPUTE) && pixel_valid_i && !output_stall_i;
+    wire expected_stream_start = (ref_phase_q == PH_LOAD) && kernel_wr_valid_i &&
+                                  (ref_load_q == N*N-1);
     wire expected_rst_count = (ref_phase_q == PH_LOAD);
-    wire expected_busy = (ref_phase_q != PH_IDLE) && (ref_phase_q != PH_DONE);
+    wire expected_busy = (ref_phase_q == PH_LOAD) || (ref_phase_q == PH_COMPUTE);
     wire expected_done = (ref_phase_q == PH_DONE);
 
     // Checker
@@ -227,6 +243,11 @@ module tb_conv_fsm;
                 errors = errors + 1;
                 $display("FAIL t=%0t: shift_valid=%b expected=%b", $time, shift_valid_o,
                          expected_shift_valid);
+            end
+            if (stream_start_o !== expected_stream_start) begin
+                errors = errors + 1;
+                $display("FAIL t=%0t: stream_start=%b expected=%b", $time, stream_start_o,
+                         expected_stream_start);
             end
             if (ready_o !== expected_ready) begin
                 errors = errors + 1;
@@ -275,8 +296,10 @@ module tb_conv_fsm;
         end
 
         // Directed test 2: a full frame with exact per-phase counts
-        // Expected: 9 accepted kernel writes, 1026 shift cycles (66 fill +
-        // 958 compute + 2 exit), 900 result-valid pulses, then done/re-arm.
+        // Expected: 9 accepted kernel writes, TOTAL_PIXELS+2 shift cycles
+        // (the padded-row prefix is just part of the same COMPUTE stream now,
+        // plus a 2-cycle exit drain), STREAM_OUT_TOTAL result-valid pulses
+        // (one per real image pixel), then done/re-arm.
         load_count = 0;
         shift_count = 0;
         valid_count = 0;
@@ -285,7 +308,7 @@ module tb_conv_fsm;
         pixel_valid_i = 1;  // continuous stream for the exact-count frame
 
         start_i = 1;
-        repeat (1300) begin
+        repeat (1364) begin
             @(negedge clk_i);
             start_i = 0;  // one-cycle start pulse
             // Issue the N*N kernel writes back-to-back after the start
@@ -335,7 +358,7 @@ module tb_conv_fsm;
         pixel_valid_i = 1;  // continuous stream for the gapped-load frame
 
         start_i = 1;
-        repeat (1500) begin
+        repeat (1564) begin
             @(negedge clk_i);
             start_i = 0;  // one-cycle start pulse
             gap_cnt = gap_cnt + 1;
@@ -374,7 +397,7 @@ module tb_conv_fsm;
         pixel_valid_i = 1;  // continuous stream for the second frame
 
         start_i = 1;
-        repeat (1100) begin
+        repeat (1164) begin
             @(negedge clk_i);
             start_i = 0;  // one-cycle start pulse
             if (kernel_wr_count < N*N) begin
@@ -407,7 +430,7 @@ module tb_conv_fsm;
         seen_done = 0;
 
         start_i = 1;
-        repeat (1600) begin
+        repeat (1664) begin
             @(negedge clk_i);
             start_i = 0;  // one-cycle start pulse
             if (kernel_wr_count < N*N) begin
@@ -416,8 +439,8 @@ module tb_conv_fsm;
             end else begin
                 kernel_wr_valid_i = 0;
             end
-            if (state_o >= 2) begin
-                // 3 stall cycles out of every 40 once the stream is active
+            if (state_o == 2) begin
+                // 3 stall cycles out of every 40 once COMPUTE (streaming) is active
                 pixel_valid_i = ((gap_cnt % 40) < 3) ? 1'b0 : 1'b1;
                 gap_cnt = gap_cnt + 1;
             end else begin
@@ -472,8 +495,8 @@ module tb_conv_fsm;
 
     // Live monitor: prints signal values on every change
     initial begin : monitor
-        $monitor("Time=%0t | state=%0d | shift=%b rv=%b | kaddr=%0d done=%b", $time, state_o,
-                 shift_valid_o, result_valid_o, kernel_addr_o, done_o);
+        $monitor("Time=%0t | state=%0d | shift=%b rv=%b | kaddr=%0d done=%b", $time,
+                 state_o, shift_valid_o, result_valid_o, kernel_addr_o, done_o);
     end
 
     // VCD dump for waveform debugging

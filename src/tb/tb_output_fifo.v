@@ -27,6 +27,7 @@ module tb_output_fifo;
     // Parameters
     localparam DATA_WIDTH = 16;
     localparam DEPTH = 8;  // small for fast exhaustive coverage
+    localparam GUARD = 4;  // must match output_fifo's default
     localparam NUM_TESTS = 500;  // random stimulus cycles
 
     // DUT interface
@@ -35,6 +36,7 @@ module tb_output_fifo;
     reg [DATA_WIDTH-1:0] wr_data_i;
     reg wr_valid_i;
     wire wr_ready_o;
+    wire wr_almost_full_o;
     wire [DATA_WIDTH-1:0] rd_data_o;
     wire rd_valid_o;
     reg rd_ready_i;
@@ -54,13 +56,15 @@ module tb_output_fifo;
     // Module instantiation
     output_fifo #(
         .DATA_WIDTH(DATA_WIDTH),
-        .DEPTH(DEPTH)
+        .DEPTH(DEPTH),
+        .GUARD(GUARD)
     ) dut (
         .clk_i     (clk_i),
         .rst_n_i   (rst_n_i),
         .wr_data_i (wr_data_i),
         .wr_valid_i(wr_valid_i),
         .wr_ready_o(wr_ready_o),
+        .wr_almost_full_o(wr_almost_full_o),
         .rd_data_o (rd_data_o),
         .rd_valid_o(rd_valid_o),
         .rd_ready_i(rd_ready_i)
@@ -105,6 +109,15 @@ module tb_output_fifo;
     wire expected_wr_ready = !g_full;
     wire [DATA_WIDTH-1:0] expected_rd_data = g_mem[g_head];
 
+    // Registered high-water expectation: the DUT registers its occupancy
+    // comparison, so the model registers its own too.
+    reg expected_wr_almost_full;
+
+    always @(posedge clk_i or negedge rst_n_i) begin : flags
+        if (!rst_n_i) expected_wr_almost_full <= 1'b0;
+        else          expected_wr_almost_full <= (g_cnt > (DEPTH - GUARD));
+    end
+
     // Checker: compare on negedge, after the posedge updates settle
     always @(negedge clk_i) begin : check
         if (rst_n_i) begin
@@ -117,6 +130,11 @@ module tb_output_fifo;
                 errors = errors + 1;
                 $display("FAIL t=%0t: wr_ready=%b expected=%b", $time, wr_ready_o,
                          expected_wr_ready);
+            end
+            if (wr_almost_full_o !== expected_wr_almost_full) begin
+                errors = errors + 1;
+                $display("FAIL t=%0t: wr_almost_full=%b expected=%b", $time, wr_almost_full_o,
+                         expected_wr_almost_full);
             end
             if (rd_valid_o && (rd_data_o !== expected_rd_data)) begin
                 errors = errors + 1;
