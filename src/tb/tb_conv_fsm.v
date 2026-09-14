@@ -9,12 +9,12 @@
 // Description: Self-checking testbench for the convolution frame controller
 //              wired together with the input pixel counter (the control unit
 //              as integrated in the accelerator top). IMAGE_HEIGHT here is the
-//              *padded* row count (real rows + N-1 leading zero-padding rows),
-//              matching conv_fsm's contract now that pixel_pad_inserter/
-//              window_array handle zero-padding upstream. A golden reference
-//              models the frame phases with its own shift counter (independent
-//              of the DUT's counter); the checker compares every FSM output
-//              (including the new row_start_o/stream_start_o) on negedge.
+//              *padded* row count (real rows + N pad rows), matching conv_fsm's
+//              contract now that pixel_pad_inserter writes the zero rows and
+//              row_buffer_bank derives the column borders upstream. A golden
+//              reference models the frame phases with its own shift counter
+//              (independent of the DUT's counter); the checker compares every FSM
+//              output (including stream_start_o) on negedge.
 //              Covers reset, a full frame with exact cycle counts, a second
 //              frame, pixel-stream stalls (pixel_valid_i deasserted), output
 //              back-pressure (output_stall_i), and randomized start-request
@@ -25,10 +25,10 @@
 //
 // Revision:
 // Revision 0.01 - File Created
-// Revision 0.02 - Removed the FILL state and the column gate from the golden
-//                  reference (matches conv_fsm Rev 0.03): IMAGE_HEIGHT is now
-//                  the padded row count, block_valid is row-only, and
-//                  row_start_o/stream_start_o are checked every cycle.
+// Revision 0.03 - Retargeted at the centred-window contract: the padded row
+//                  count is real rows + N and block_valid opens at padded row N.
+//                  row_start_o is gone from conv_fsm (row_buffer_bank derives the
+//                  borders from the pixel column), so its check was removed.
 // Additional Comments:
 //
 //////////////////////////////////////////////////////////////////////////////////
@@ -38,14 +38,13 @@ module tb_conv_fsm;
     // Parameters
     localparam N = 3;
     localparam IMAGE_WIDTH = 32;
-    localparam PAD_ROWS_BEFORE = N - 1;
-    localparam IMAGE_HEIGHT = 32 + PAD_ROWS_BEFORE;  // padded row count (real 32 + N-1 pad rows)
+    localparam IMAGE_HEIGHT = 32 + N;  // padded row count (real 32 + N pad rows)
     localparam COEFF_WIDTH = 8;
     localparam PIX_ADDR_WIDTH = $clog2(IMAGE_WIDTH * IMAGE_HEIGHT);
     localparam TOTAL_PIXELS = IMAGE_WIDTH * IMAGE_HEIGHT;
-    // Streamed outputs per frame: one per real image pixel (rows past the
-    // N-1 padding-row prefix), gap-free thanks to the row-start window flush.
-    localparam STREAM_OUT_TOTAL = (IMAGE_HEIGHT - N + 1) * IMAGE_WIDTH;
+    // Streamed outputs per frame: one per real image pixel (rows past the N
+    // padding-row prefix), gap-free thanks to the row-buffer window bank.
+    localparam STREAM_OUT_TOTAL = (IMAGE_HEIGHT - N) * IMAGE_WIDTH;
     localparam STATE_WIDTH = 2;
     localparam NUM_TESTS = 300;  // random stimulus cycles
 
@@ -60,7 +59,6 @@ module tb_conv_fsm;
     wire kernel_we_o;
     wire [$clog2(N*N)-1:0] kernel_addr_o;
     wire shift_valid_o;
-    wire row_start_o;
     wire stream_start_o;
     wire ready_o;
     wire result_valid_o;
@@ -105,7 +103,6 @@ module tb_conv_fsm;
         .kernel_we_o   (kernel_we_o),
         .kernel_addr_o (kernel_addr_o),
         .shift_valid_o (shift_valid_o),
-        .row_start_o   (row_start_o),
         .stream_start_o(stream_start_o),
         .ready_o       (ready_o),
         .result_valid_o(result_valid_o),
@@ -206,10 +203,10 @@ module tb_conv_fsm;
         end
     end
 
-    // Reference block-valid: row-only gate, using the padded row count. Every
-    // column past the N-1 padding-row prefix is already a correct,
-    // zero-padded window thanks to window_array's row-start flush.
-    wire ref_block_valid = ((ref_shifts_q / IMAGE_WIDTH) >= N-1);
+    // Reference block-valid: row-only gate, using the padded row count. The
+    // window bank centres the window on real row w-N, so results start at
+    // padded row N; the bank's own border muxes handle every column.
+    wire ref_block_valid = ((ref_shifts_q / IMAGE_WIDTH) >= N);
 
     // Expected Moore outputs (combinational from the reference phase).
     // shift_valid is gated by the pixel stream: a deasserted valid stalls
@@ -217,7 +214,6 @@ module tb_conv_fsm;
     wire expected_kernel_we = (ref_phase_q == PH_LOAD);
     wire expected_ready = (ref_phase_q == PH_COMPUTE) && !output_stall_i;
     wire expected_shift_valid = (ref_phase_q == PH_COMPUTE) && pixel_valid_i && !output_stall_i;
-    wire expected_row_start = expected_shift_valid && ((ref_shifts_q % IMAGE_WIDTH) == 0);
     wire expected_stream_start = (ref_phase_q == PH_LOAD) && kernel_wr_valid_i &&
                                   (ref_load_q == N*N-1);
     wire expected_rst_count = (ref_phase_q == PH_LOAD);
@@ -247,11 +243,6 @@ module tb_conv_fsm;
                 errors = errors + 1;
                 $display("FAIL t=%0t: shift_valid=%b expected=%b", $time, shift_valid_o,
                          expected_shift_valid);
-            end
-            if (row_start_o !== expected_row_start) begin
-                errors = errors + 1;
-                $display("FAIL t=%0t: row_start=%b expected=%b", $time, row_start_o,
-                         expected_row_start);
             end
             if (stream_start_o !== expected_stream_start) begin
                 errors = errors + 1;
@@ -504,8 +495,8 @@ module tb_conv_fsm;
 
     // Live monitor: prints signal values on every change
     initial begin : monitor
-        $monitor("Time=%0t | state=%0d | shift=%b rowst=%b rv=%b | kaddr=%0d done=%b", $time,
-                 state_o, shift_valid_o, row_start_o, result_valid_o, kernel_addr_o, done_o);
+        $monitor("Time=%0t | state=%0d | shift=%b rv=%b | kaddr=%0d done=%b", $time,
+                 state_o, shift_valid_o, result_valid_o, kernel_addr_o, done_o);
     end
 
     // VCD dump for waveform debugging

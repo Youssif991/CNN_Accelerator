@@ -31,6 +31,11 @@
 //                  mapping to match the design's column-gated output (both
 //                  row and col >= N-1). Added output_stall condition to the
 //                  gap_check to avoid false errors during back-pressure.
+// Revision 0.04 - Golden model switched from the trailing-anchored window to
+//                  the centred one produced by row_buffer_bank: output (row,col)
+//                  now integrates rows row-1..row+1 and columns col-1..col+1,
+//                  with taps outside the image taken as zero. Frame output count
+//                  is unchanged (still one word per real pixel).
 //
 // Additional Comments:
 //
@@ -48,12 +53,13 @@ module tb_accelerator_top;
     localparam COEFF_WIDTH = 8;
     localparam OUT_WIDTH = 16;
     localparam ROUND_ENABLE = 1;
-    localparam PIPE_STAGES = 2;
+    localparam PIPE_STAGES = 11;
     localparam TOTAL_PIXELS = IMAGE_WIDTH * IMAGE_HEIGHT;
     localparam PIX_ADDR_WIDTH = $clog2(TOTAL_PIXELS);
 
-    // Same convolution now (row zero-padding + window row-start flush): the
-    // output covers the full image, one word per accepted real pixel.
+    // Same-size output now: the centred window is defined for every pixel of
+    // the image, so the output covers the full image, one word per accepted
+    // real pixel. Taps outside the image are zero ("same" zero padding).
     localparam OUT_W = IMAGE_WIDTH;
     localparam OUT_H = IMAGE_HEIGHT;
     localparam STREAM_OUT_TOTAL = OUT_W * OUT_H;
@@ -327,14 +333,13 @@ module tb_accelerator_top;
         end
     endtask
 
-    // Task: check the accepted stream against the zero-padded, causal/
-    // trailing-anchored "same convolution" reference model. Output (row,col)
-    // is the window ending at (row,col) -- rows [row-N+1,row], cols
-    // [col-N+1,col] -- with any tap that falls above the top edge or left of
-    // the left edge (negative real coordinate) substituted with a zero pixel,
-    // matching pixel_pad_inserter's row padding and window_array's row-start
-    // column flush. No tap ever falls past the bottom/right edge, since the
-    // window only ever looks backward.
+    // Task: check the accepted stream against the centred "same convolution"
+    // reference model. Output (row,col) is the window centred on that pixel,
+    // rows [row-1,row+1] and columns [col-1,col+1], with every tap that falls
+    // outside the image (negative or past the far edge) substituted with a zero
+    // pixel. That is exactly what row_buffer_bank implements: the vertical
+    // borders come from the pad rows pixel_pad_inserter writes, the horizontal
+    // borders from the bank's own left/right tap muxes.
     task check_stream;
         integer a;
         integer row;
@@ -353,9 +358,10 @@ module tb_accelerator_top;
                 col = a % OUT_W;
                 ref_sum = 0;
                 for (tap = 0; tap < N * N; tap = tap + 1) begin
-                    tap_row = row - (N - 1) + (tap / N);
-                    tap_col = col - (N - 1) + (tap % N);
-                    tap_pixel = (tap_row < 0 || tap_col < 0) ? 8'd0 :
+                    tap_row = row - 1 + (tap / N);
+                    tap_col = col - 1 + (tap % N);
+                    tap_pixel = (tap_row < 0 || tap_row >= IMAGE_HEIGHT || tap_col < 0 ||
+                                 tap_col >= IMAGE_WIDTH) ? 8'd0 :
                                 ref_img[tap_row * IMAGE_WIDTH + tap_col];
                     ref_sum = ref_sum + $signed({1'b0, tap_pixel}) * ref_kernel[tap];
                 end
@@ -511,10 +517,10 @@ module tb_accelerator_top;
         $finish;
     end
 
-    // result_valid_o is intentionally allowed to gap at the first N-1
-    // columns of each row because the controller emits only complete
-    // N-by-N windows. The handshake/count checks above are the authoritative
-    // stream checks; a gap-free assertion would reject valid 900-word frames.
+    // result_valid_o is gap-free through COMPUTE and one output word per
+    // accepted real pixel arrives after the pipeline fill; the handshake and
+    // count checks above are the authoritative stream checks, and check_stream
+    // verifies the data of every one of them.
 
     // Live monitor: prints signal values on every change
     initial begin : monitor

@@ -7,11 +7,11 @@
 // Module Name: pixel_pad_inserter
 // Tool Versions: Vivado 2025.2
 // Description: Sits between the host's real pixel stream and the rest of the
-//              datapath (conv_fsm, pixel_counter, line_buffer_bank), presenting
+//              datapath (conv_fsm, pixel_counter, row_buffer_bank), presenting
 //              a synthetic raster of PADDED_HEIGHT = IMAGE_HEIGHT + PAD_ROWS_BEFORE
 //              + PAD_ROWS_AFTER rows, each IMAGE_WIDTH columns wide (columns are
-//              never padded here: the sliding window's horizontal zero-padding is
-//              handled for free by window_array's row-start flush instead, since
+//              never padded here: row_buffer_bank supplies the horizontal
+//              zero-padding itself, from its own left/right tap muxes, since
 //              spending stream cycles on column padding would reintroduce a
 //              periodic per-row gap in the output valid stream). Real rows pass
 //              the host's pixels through unchanged; PAD_ROWS_BEFORE/AFTER rows are
@@ -37,8 +37,9 @@
 //
 // Revision:
 // Revision 0.01 - File Created
-// Revision 0.02 - Row-only padding (columns handled by window_array's row-start
-//                  flush instead, to avoid a periodic per-row valid gap). Fixed a
+// Revision 0.02 - Row-only padding (columns handled by row_buffer_bank's
+//                  left/right tap muxes instead, to avoid a periodic per-row valid
+//                  gap). Fixed a
 //                  backpressure bug: the four output registers previously updated
 //                  unconditionally every cycle (only row_q/col_q/active_q were
 //                  held via the advance/en_i dependency), so a pending,
