@@ -137,10 +137,10 @@ module tb_accelerator_top;
         .result_ready_i   (result_ready_i)
     );
 
-    // Clock generation: free-running 20 ns period (50 MHz)
+    // Clock generation: free-running 8 ns period (125 MHz), matching the XDC constraint
     initial begin : clock
         clk_i = 0;
-        forever #10 clk_i = ~clk_i;
+        forever #4 clk_i = ~clk_i;
     end
 
     // Capture each accepted output for comparison with the reference model.

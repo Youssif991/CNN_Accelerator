@@ -23,6 +23,7 @@
 | Input interface | Streaming, 1 pixel/cycle, `pixel_valid_i` / `ready_o` |
 | Output interface | FWFT FIFO, 16 × 17 bit, `result_valid_o` / `result_tlast_o` / `result_ready_i` |
 | Clock / reset | 125 MHz (8.000 ns), pin H16 / pin M19 |
+| Power activity capture | SAIF at 125 MHz, matching the constraint |
 
 ## 2. Utilization (Post-Route)
 
@@ -80,21 +81,21 @@ Penalty = LUTs + 50·DSPs + 100·BRAMs = 330 + 450 + 0 = 780
 
 | Metric | Value |
 |---|---:|
-| Total on-chip power | 0.112 W |
-| Dynamic | 0.008 W (7 %) |
-| Device static | 0.104 W (93 %) |
+| Total on-chip power | 0.117 W |
+| Dynamic | 0.013 W (11 %) |
+| Device static | 0.105 W (89 %) |
 | Confidence level | Medium |
-| Activity file | `synth_out/activity.saif` |
+| Activity file | `synth_out/activity.saif` (captured at 125 MHz) |
 | Design nets matched | 15 % (200 / 1363) |
-| Junction temperature | 26.3 °C |
+| Junction temperature | 26.4 °C |
 
 | Dynamic breakdown | Power | Share |
 |---|---:|---:|
-| Clocks | 0.003 W | 43 % |
-| I/O | 0.003 W | 40 % |
-| Signals | 0.001 W | 12 % |
+| I/O | 0.006 W | 46 % |
+| Clocks | 0.003 W | 23 % |
+| Signals | 0.002 W | 15 % |
+| DSP | 0.001 W | 8 % |
 | Logic | < 0.001 W | < 4 % |
-| DSP | < 0.001 W | < 1 % |
 
 ## 5. Throughput
 
@@ -104,7 +105,7 @@ Penalty = LUTs + 50·DSPs + 100·BRAMs = 330 + 450 + 0 = 780
 | Frame average (32×32) | 0.897 output pixel / cycle |
 | Peak absolute (at 125 MHz) | 125 Mpix/s |
 | Peak compute rate | 2.25 GOPS |
-| Energy efficiency | 20.1 GOPS/W |
+| Energy efficiency | 19.2 GOPS/W |
 
 ```
 Frame cycles = 9 + 35 × 32 + 13 = 1142
@@ -119,12 +120,12 @@ FOM = Throughput(px/cycle) / (Power × (LUTs + 50·DSPs + 100·BRAMs))
 
 | Throughput | Power basis | Denominator | FOM |
 |---|---|---:|---:|
-| Peak 1.000 | Total 0.112 W | 87.36 | 1.14 × 10⁻² |
-| Peak 1.000 | Dynamic 0.008 W | 6.24 | 1.60 × 10⁻¹ |
-| Frame avg 0.897 | Total 0.112 W | 87.36 | 1.03 × 10⁻² |
+| Peak 1.000 | Total 0.117 W | 91.26 | 1.10 × 10⁻² |
+| Peak 1.000 | Dynamic 0.013 W | 10.14 | 9.86 × 10⁻² |
+| Frame avg 0.897 | Total 0.117 W | 91.26 | 9.83 × 10⁻³ |
 
 ```
-Headline FOM = 1 / (0.112 × 780) = 1.14 × 10⁻²
+Headline FOM = 1 / (0.117 × 780) = 1.10 × 10⁻²
 ```
 
 ## 7. Variant Comparison
@@ -138,7 +139,12 @@ Headline FOM = 1 / (0.112 × 780) = 1.14 × 10⁻²
 | Penalty | 795 | 843 | 780 |
 | WNS @ 8.000 ns | +0.895 ns | +2.735 ns | +3.006 ns |
 | Fmax | 140.7 MHz | 190.0 MHz | 200.3 MHz |
-| Total power | 0.110 W | 0.111 W | 0.112 W |
+| Total power | 0.110 W | 0.111 W | 0.117 W |
 | Output geometry | centred image shifted by (+1, +1) | centred, no shift | centred, no shift |
 | Sustained output / cycle | 1.000 | 1.000 | 1.000 |
-| FOM (peak, total power) | 1.14 × 10⁻² | 1.07 × 10⁻² | 1.14 × 10⁻² |
+| FOM (peak, total power) | 1.14 × 10⁻² | 1.07 × 10⁻² | 1.10 × 10⁻² |
+
+The two LUT-adder-tree variants were measured with an activity file captured at
+50 MHz; only the DSP-chain column reflects the 125 MHz capture. Their power and
+FOM are therefore not directly comparable. Resource and timing columns are
+unaffected.
