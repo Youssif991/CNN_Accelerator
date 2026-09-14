@@ -31,7 +31,6 @@ vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/output_fifo.v"
 vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/pixel_pad_inserter.v"
 vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/row_buffer_bank.v"
 vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/sat_round_unit.v"
-vlog -work work -timescale "1ns/1ps" "$SRC_PATH/multiplier/dsp_mult_r4.v"
 vlog -work work -timescale "1ns/1ps" "$SRC_PATH/top/accelerator_top.v"
 
 # 5. Compile Testbench Files

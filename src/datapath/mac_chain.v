@@ -79,7 +79,7 @@ module mac_chain #(
     // Per-tap products, computed from the skewed operands. The operands are
     // padded to the DSP48E1 multiplier shape (a non-negative pixel on the 25-bit
     // A operand, the sign-extended coefficient on the 18-bit B operand) and
-    // use_dsp forces the map, exactly as in dsp_mult_r4.
+    // use_dsp forces the map.
     wire signed [SUM_WIDTH-1:0] tap_product[0:TAPS-1];
 
     genvar t;
