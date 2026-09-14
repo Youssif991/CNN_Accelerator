@@ -34,7 +34,6 @@ vlog -work work "$SRC_PATH/datapath/output_fifo.v"
 vlog -work work "$SRC_PATH/datapath/pixel_pad_inserter.v"
 vlog -work work "$SRC_PATH/datapath/row_buffer_bank.v"
 vlog -work work "$SRC_PATH/datapath/sat_round_unit.v"
-vlog -work work "$SRC_PATH/multiplier/dsp_mult_r4.v"
 vlog -work work "$SRC_PATH/top/accelerator_top.v"
 
 # 4. Compile Testbench Files (Include UVM 1.2 source path)
