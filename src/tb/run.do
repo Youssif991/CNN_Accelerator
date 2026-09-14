@@ -25,14 +25,12 @@ vlog -work work -timescale "1ns/1ps" +incdir+$UVM_12_PATH/src $UVM_12_PATH/src/u
 puts "\n--- Compiling RTL Files ---"
 vlog -work work -timescale "1ns/1ps" "$SRC_PATH/control/conv_fsm.v"
 vlog -work work -timescale "1ns/1ps" "$SRC_PATH/control/pixel_counter.v"
-vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/adder_tree.v"
 vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/kernel_reg_bank.v"
-vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/line_buffer.v"
-vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/line_buffer_bank.v"
-vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/mac_array.v"
+vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/mac_chain.v"
 vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/output_fifo.v"
+vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/pixel_pad_inserter.v"
+vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/row_buffer_bank.v"
 vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/sat_round_unit.v"
-vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/window_array.v"
 vlog -work work -timescale "1ns/1ps" "$SRC_PATH/multiplier/dsp_mult_r4.v"
 vlog -work work -timescale "1ns/1ps" "$SRC_PATH/top/accelerator_top.v"
 
@@ -49,9 +47,6 @@ vsim -c -voptargs="+acc" -suppress 3009,12110 work.conv_top \
      +UVM_TESTNAME=conv_test \
      +UVM_VERBOSITY=UVM_MEDIUM
 
-
-
-do wave.do
-# 8. Run Simulation
+# 7. Run Simulation
 puts "\n--- Running Simulation ---"
 run -all
