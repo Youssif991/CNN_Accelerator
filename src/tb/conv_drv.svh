@@ -60,6 +60,9 @@ task conv_drv ::run_phase(uvm_phase phase);
         conv_vif.drv_cb.relu_en_i         <= conv_item.relu_en_i;
         conv_vif.drv_cb.result_ready_i    <= conv_item.result_ready_i;
 
+        if (conv_item.pixel_valid_i) begin
+            do @(conv_vif.drv_cb); while (!conv_vif.drv_cb.ready_o);
+
         seq_item_port.item_done();
     end
 endtask

@@ -65,6 +65,7 @@ interface conv_intf #(
         output kernel_wr_data_i;
         output relu_en_i;
         output result_ready_i;
+        input ready_o;
     endclocking
 
 endinterface
