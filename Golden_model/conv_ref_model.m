@@ -18,15 +18,32 @@ close all;
 %% ------------------------------------------------------------------------
 % Parameters: these values must match the RTL/UVM configuration.
 % -------------------------------------------------------------------------
-N            = 5;       % Kernel size: N x N
+N            = 3;       % Kernel size: N x N
 IMAGE_WIDTH  = 8;       % RTL image width
 IMAGE_HEIGHT = 8;       % RTL image height
 PIXEL_WIDTH  = 8;       % Unsigned grayscale pixel width
 COEFF_WIDTH  = 8;       % Signed coefficient width (integer, fixed-point container)
 OUT_BITS     = 16;      % Signed output width
 RELU_ENABLE  = true;    % Must match the RTL ReLU enable
-PADDING      = 0;       % Zero padding
 STRIDE       = 1;       % Convolution stride
+
+% --- Zero padding, derived automatically to match the RTL -----------------
+% Rows: pixel_pad_inserter/accelerator_top insert real zero rows, asymmetric
+% about the kernel centre:
+%   PAD_ROWS_BEFORE = (N-1)/2, PAD_ROWS_AFTER = (N+1)/2
+% (accelerator_top.v). This is a function of N, not a hardcoded constant, so
+% changing N (or IMAGE_HEIGHT) automatically re-derives the right amount.
+PAD_ROWS_BEFORE = floor((N - 1) / 2);
+PAD_ROWS_AFTER  = floor((N + 1) / 2);
+
+% Columns: row_buffer_bank does NOT scale its column padding with N -- its
+% tap-mux generate loop always produces exactly 3 column taps per row
+% (tap_old/tap_mid/tap_base), i.e. a fixed +/-1 zero column on each border
+% regardless of kernel size. This is mirrored here literally (bug and all)
+% so the golden model matches actual RTL behavior rather than "correct"
+% same-padding.
+PAD_COLS_BEFORE = 1;
+PAD_COLS_AFTER  = 1;
 
 % --- Fixed-point spec for the kernel -------------------------------------
 % The kernel below is defined in real (floating-point) coefficients that
@@ -42,17 +59,17 @@ STRIDE       = 1;       % Convolution stride
 % real-valued result in OUT_BITS. This FRAC_BITS rescale is DISTINCT from
 % the guard-bit headroom bits used purely to prevent integer overflow
 % during accumulation -- do not conflate the two.
-FRAC_BITS = 4;           % Q1.7: kernel values must lie in [-1, 1)
+FRAC_BITS = 4;
 
 %% ------------------------------------------------------------------------
 % File paths.
 % Change source_image_path to the real image you want to test.
 % -------------------------------------------------------------------------
 source_image_path = ...
-    'D:\IEEE_SSCS\CNN_prjt\CNN_Accelerator\Golden_model\input_image.jpg';
+    'input_image.jpg';
 
 output_dir = ...
-    'D:\IEEE_SSCS\CNN_prjt\CNN_Accelerator\testbench';
+    '..\\src\\tb';
 
 if ~isfile(source_image_path)
     error('Input image does not exist: %s', source_image_path);
@@ -86,11 +103,9 @@ image_pixels = uint8(image_pixels);
 % Define the real-valued (floating-point) convolution kernel.
 % -------------------------------------------------------------------------
 kernel = [ ...
-0.0030, 0.0133, 0.0219, 0.0133, 0.0030; ...
-0.0133, 0.0596, 0.0983, 0.0596, 0.0133; ...
-0.0219, 0.0983, 0.1621, 0.0983, 0.0219; ...
-0.0133, 0.0596, 0.0983, 0.0596, 0.0133; ...
-0.0030, 0.0133, 0.0219, 0.0133, 0.0030];
+1, 0, -1; ...
+1, 0, -1; ...
+1, 0, -1];
 
 if size(kernel,1) ~= N || size(kernel,2) ~= N
     error('Kernel dimensions do not match N.');
@@ -121,8 +136,8 @@ fprintf('Quantized kernel gain (sum)  : %.6f (ideal ~2^FRAC_BITS = %d)\n', ...
 %% ------------------------------------------------------------------------
 % Calculate padded-convolution output dimensions.
 % -------------------------------------------------------------------------
-OUTPUT_HEIGHT = floor((IMAGE_HEIGHT + 2*PADDING - N)/STRIDE) + 1;
-OUTPUT_WIDTH  = floor((IMAGE_WIDTH  + 2*PADDING - N)/STRIDE) + 1;
+OUTPUT_HEIGHT = floor((IMAGE_HEIGHT + PAD_ROWS_BEFORE + PAD_ROWS_AFTER - N)/STRIDE) + 1;
+OUTPUT_WIDTH  = floor((IMAGE_WIDTH  + PAD_COLS_BEFORE + PAD_COLS_AFTER - N)/STRIDE) + 1;
 
 expected = zeros(OUTPUT_HEIGHT, OUTPUT_WIDTH, 'int32');
 
@@ -144,8 +159,8 @@ for out_row = 1:OUTPUT_HEIGHT
             for kernel_col = 1:N
 
                 % Coordinates in the original image.
-                image_row = (out_row-1)*STRIDE + kernel_row - PADDING;
-                image_col = (out_col-1)*STRIDE + kernel_col - PADDING;
+                image_row = (out_row-1)*STRIDE + kernel_row - PAD_ROWS_BEFORE;
+                image_col = (out_col-1)*STRIDE + kernel_col - PAD_COLS_BEFORE;
 
                 % Zero-padding boundary behavior.
                 if image_row < 1 || image_row > IMAGE_HEIGHT || ...
@@ -225,7 +240,8 @@ fprintf('\nGolden files generated successfully.\n');
 fprintf('Source image           : %s\n', source_image_path);
 fprintf('Input image size       : %d x %d\n', IMAGE_HEIGHT, IMAGE_WIDTH);
 fprintf('Kernel size            : %d x %d\n', N, N);
-fprintf('Padding                : %d pixel(s), zero padding\n', PADDING);
+fprintf('Row padding    (before/after): %d / %d, zero padding\n', PAD_ROWS_BEFORE, PAD_ROWS_AFTER);
+fprintf('Column padding (before/after): %d / %d, zero padding\n', PAD_COLS_BEFORE, PAD_COLS_AFTER);
 fprintf('Stride                 : %d\n', STRIDE);
 fprintf('Output image size      : %d x %d\n', OUTPUT_HEIGHT, OUTPUT_WIDTH);
 fprintf('Input pixels generated : %d\n', length(input_stream));

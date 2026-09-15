@@ -10,12 +10,12 @@ vlib work
 vmap work work
 
 # 2. Define Base Paths
-set SRC_PATH "D:/IEEE_SSCS/CNN_prjt/CNN_Accelerator/src"
-set TB_PATH  "D:/IEEE_SSCS/CNN_prjt/CNN_Accelerator/testbench"
+set SRC_PATH ".."
+set TB_PATH  [pwd]
 
 # Set UVM Paths
 set UVM_12_PATH "$::env(MODEL_TECH)/../verilog_src/uvm-1.2"
-set UVM_DPI_LIB "C:/questasim64_2021.1/uvm-1.2/win64/uvm_dpi"
+set UVM_DPI_LIB "D:/questasim64_2021.1/uvm-1.2/win64/uvm_dpi"
 
 # 3. Compile UVM 1.2 Package with Default Timescale
 puts "\n--- Compiling UVM 1.2 Library ---"
@@ -46,6 +46,6 @@ vsim -c -voptargs="+acc" -suppress 3009,12110 work.conv_top \
      +UVM_TESTNAME=conv_test \
      +UVM_VERBOSITY=UVM_MEDIUM
 
-# 7. Run Simulation
+do wave.do
 puts "\n--- Running Simulation ---"
 run -all

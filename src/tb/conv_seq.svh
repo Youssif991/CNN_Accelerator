@@ -119,9 +119,17 @@ task conv_seq::body();
     bit result_ready;
     bit relu_en = 1'b1;
 
-    $readmemh("src/tb/kernel_coeff.hex", kernel_data);
-    $readmemh("src/tb/pixel_input.hex", pixel_data);
+    int fd_kernel, fd_pixel;
 
+    fd_kernel = $fopen("kernel_coeff.hex", "r");
+    if (fd_kernel == 0) `uvm_fatal("KERNEL_FILE", "Could not open kernel_coeff.hex");
+    $fclose(fd_kernel);
+    $readmemh("kernel_coeff.hex", kernel_data);
+
+    fd_pixel = $fopen("pixel_input.hex", "r");
+    if (fd_pixel == 0) `uvm_fatal("PIXEL_FILE", "Could not open pixel_input.hex");
+    $fclose(fd_pixel);
+    $readmemh("pixel_input.hex", pixel_data);
     // Load kernel coefficients
     idle_cycle( 2 , 1'b1);
     get_ready(1'b1 , 1'b0 , relu_en);

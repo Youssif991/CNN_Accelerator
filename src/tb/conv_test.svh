@@ -16,8 +16,9 @@
 //******************************************************************************
 
 // Extend the parameterized base test and pass the design parameters
+
 class conv_test extends my_test #(
-    .N(5),
+    .N(3),
     .IMAGE_WIDTH(8),
     .IMAGE_HEIGHT(8),
     .PIXEL_WIDTH(8),
@@ -25,8 +26,24 @@ class conv_test extends my_test #(
     .OUT_WIDTH(16),
     .ROUND_ENABLE(1),
     .FRAC_BITS(4),
-    .PIPE_STAGES(2)
+    .PIPE_STAGES(11)
 );
+
+
+/*
+
+    .N(conv_params_pkg::N),
+    .IMAGE_WIDTH(conv_params_pkg::IMAGE_WIDTH),
+    .IMAGE_HEIGHT(conv_params_pkg::IMAGE_HEIGHT),
+    .PIXEL_WIDTH(conv_params_pkg::PIXEL_WIDTH),
+    .COEFF_WIDTH(conv_params_pkg::COEFF_WIDTH),
+    .OUT_WIDTH(conv_params_pkg::OUT_WIDTH),
+    .ROUND_ENABLE(conv_params_pkg::ROUND_ENABLE),
+    .FRAC_BITS(conv_params_pkg::FRAC_BITS),
+    .PIPE_STAGES(conv_params_pkg::PIPE_STAGES)
+);
+*/
+
 
     // Register this non-parameterized specialization with the factory
     `uvm_component_utils(conv_test)

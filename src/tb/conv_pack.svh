@@ -15,8 +15,11 @@
 // Additional Comments:
 //******************************************************************************
 
+//`include "conv_params_pkg.svh"
+
 package conv_pack;
     import uvm_pkg::*;
+    //import conv_params_pkg::*;
     `include "uvm_macros.svh"
 
     `include "conv_params.svh"
@@ -30,6 +33,8 @@ package conv_pack;
     `include "conv_env.svh"
     `include "my_test.svh"
     `include "conv_test.svh"
+
+    //import conv_params_pkg::*;
 endpackage
 
 `endif

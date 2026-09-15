@@ -1,18 +1,31 @@
 `include "conv_pack.svh"
-`include "conv_params.svh"
+`include "conv_params_pkg.svh"
 `include "conv_intf.svh"
 
 module conv_top();
     import conv_pack::*;
     import uvm_pkg::*;
+    //import conv_params_pkg::*;
 
     // -------------------------------------------------------------------
-    // Testbench-side copy of the accelerator_top parameters. Change these
-    // (and only these) to match whatever DUT configuration you want to
+    // Testbench-side copy of the accelerator_top parameters. Change them
+    // in CONV_PARAMS.SVH to match whatever DUT configuration you want to
     // exercise; they flow into both the interface and the DUT instance
     // below, so the two can never disagree.
     // -------------------------------------------------------------------
-    localparam int N            = 5;
+   /* localparam int N            = conv_params_pkg::N;
+    localparam int IMAGE_WIDTH  = conv_params_pkg::IMAGE_WIDTH;
+    localparam int IMAGE_HEIGHT = conv_params_pkg::IMAGE_HEIGHT;
+    localparam int PIXEL_WIDTH  = conv_params_pkg::PIXEL_WIDTH;
+    localparam int COEFF_WIDTH  = conv_params_pkg::COEFF_WIDTH;
+    localparam int OUT_WIDTH    = conv_params_pkg::OUT_WIDTH;
+    localparam int ROUND_ENABLE = conv_params_pkg::ROUND_ENABLE;
+    localparam int FRAC_BITS    = conv_params_pkg::FRAC_BITS;
+    localparam int PIPE_STAGES  = conv_params_pkg::PIPE_STAGES;
+*/
+
+
+    localparam int N            = 3;
     localparam int IMAGE_WIDTH  = 8;
     localparam int IMAGE_HEIGHT = 8;
     localparam int PIXEL_WIDTH  = 8;
@@ -20,7 +33,7 @@ module conv_top();
     localparam int OUT_WIDTH    = 16;
     localparam int ROUND_ENABLE = 1;
     localparam int FRAC_BITS    = 4;
-    localparam int PIPE_STAGES  = 2;
+    localparam int PIPE_STAGES  = 11;
 
     // 1. DUT reset handle
     bit rst_n_i;
