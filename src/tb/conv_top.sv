@@ -26,6 +26,7 @@ module conv_top();
 
 
     localparam int N            = 3;
+    localparam int N_Kernel     = 2;
     localparam int IMAGE_WIDTH  = 8;
     localparam int IMAGE_HEIGHT = 8;
     localparam int PIXEL_WIDTH  = 8;
@@ -48,6 +49,7 @@ module conv_top();
 
     conv_intf #(
         .N(N),
+        .N_Kernel(N_Kernel),
         .IMAGE_WIDTH(IMAGE_WIDTH),
         .IMAGE_HEIGHT(IMAGE_HEIGHT),
         .PIXEL_WIDTH(PIXEL_WIDTH),
@@ -59,6 +61,7 @@ module conv_top();
 
     accelerator_top #(
         .N(N),
+        .N_Kernel(N_Kernel),
         .IMAGE_WIDTH(IMAGE_WIDTH),
         .IMAGE_HEIGHT(IMAGE_HEIGHT),
         .PIXEL_WIDTH(PIXEL_WIDTH),
@@ -89,7 +92,7 @@ module conv_top();
     // 5. Test Execution
     initial begin
     uvm_config_db#(virtual conv_intf#(
-        N, IMAGE_WIDTH, IMAGE_HEIGHT, PIXEL_WIDTH, COEFF_WIDTH, OUT_WIDTH,
+        N, N_Kernel, IMAGE_WIDTH, IMAGE_HEIGHT, PIXEL_WIDTH, COEFF_WIDTH, OUT_WIDTH,
         ROUND_ENABLE, FRAC_BITS, PIPE_STAGES
     ))::set(null, "uvm_test_top", "conv_vif", intf);
 

@@ -77,7 +77,8 @@
 // -----------------------------------------------------------------------
 
 `define CONV_PARAMS_DECL \
-    parameter int N              = 3,  \
+    parameter int N              = 3, \
+    parameter int N_Kernel       = 2, \
     parameter int IMAGE_WIDTH    = 8, \
     parameter int IMAGE_HEIGHT   = 8, \
     parameter int PIXEL_WIDTH    = 8,  \
@@ -91,6 +92,6 @@
     parameter int SUM_WIDTH      = PROD_WIDTH + $clog2(N*N)
 
 `define CONV_PARAMS_LIST \
-    N, IMAGE_WIDTH, IMAGE_HEIGHT, PIXEL_WIDTH, COEFF_WIDTH, OUT_WIDTH, ROUND_ENABLE, FRAC_BITS, PIPE_STAGES, PIX_ADDR_WIDTH, PROD_WIDTH, SUM_WIDTH
+    N, N_Kernel, IMAGE_WIDTH, IMAGE_HEIGHT, PIXEL_WIDTH, COEFF_WIDTH, OUT_WIDTH, ROUND_ENABLE, FRAC_BITS, PIPE_STAGES, PIX_ADDR_WIDTH, PROD_WIDTH, SUM_WIDTH
 
 `endif

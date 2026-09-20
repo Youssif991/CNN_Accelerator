@@ -10,7 +10,7 @@
 //              kernel loading (LOAD) and the compute pass (COMPUTE) with one
 //              output pixel per cycle, then the done handoff. The kernel load
 //              is host-paced: LOAD advances one coefficient per
-//              kernel_wr_valid_i pulse, across all N_Kernel kernels back
+//              kernel_wr_valid_i pulse, across all NUM_KERNELS kernels back
 //              to back. The pixel stream is gated by pixel_valid_i: a
 //              deasserted valid stalls the shift (window delay bank and
 //              address counter all hold), so the pipeline stays synchronized
@@ -29,7 +29,7 @@
 //              There is therefore no column gate and no FILL state: LOAD
 //              transitions straight into COMPUTE.
 //
-//              Multiple kernels (N_Kernel > 1): once a pass's pipeline has
+//              Multiple kernels (NUM_KERNELS > 1): once a pass's pipeline has
 //              fully drained (the same exit_cnt countdown used for the
 //              single-kernel case), the FSM either finishes (S_DONE) if this
 //              was the last kernel, or loops back for the next kernel without
@@ -61,7 +61,7 @@
 //                  rows long and block_valid opens at padded row N. Because the
 //                  bank derives its border zeroing from the pixel column,
 //                  row_start_o is gone and no row_end_o was added.
-// Revision 0.05 - Added N_Kernel: LOAD now loads N_Kernel*N*N
+// Revision 0.05 - Added NUM_KERNELS: LOAD now loads NUM_KERNELS*N*N
 //                  coefficients, and S_COMPUTE loops per-kernel (kernel_idx_o,
 //                  replay_o) instead of always exiting to S_DONE after one
 //                  pass.
@@ -77,7 +77,7 @@ module conv_fsm #(
     parameter PIPE_STAGES = 0,  // Datapath pipeline delay (stages after the window)
     parameter PIX_ADDR_WIDTH = $clog2(IMAGE_WIDTH * IMAGE_HEIGHT),
     parameter STATE_WIDTH = 2,  // State encoding width
-    parameter N_Kernel = 1   // Number of kernels / output channels per job
+    parameter NUM_KERNELS = 1   // Number of kernels / output channels per job
 ) (
     input wire clk_i,
     input wire rst_n_i,
@@ -89,7 +89,7 @@ module conv_fsm #(
     input wire [PIX_ADDR_WIDTH-1:0] pix_addr_i,  // Current input pixel index
     input wire pix_last_i,  // Last input pixel is being presented
     output wire kernel_we_o,  // Kernel load write enable
-    output wire [$clog2(N_Kernel*N*N)-1:0] kernel_addr_o,  // Kernel load address (flat, across all kernels)
+    output wire [$clog2(NUM_KERNELS*N*N)-1:0] kernel_addr_o,  // Kernel load address (flat, across all kernels)
     output wire shift_valid_o,  // Shift the row buffers and advance the pixel counter
     output wire stream_start_o,  // One-cycle pulse on every pass start: (re)arms pixel_pad_inserter
     output wire ready_o,  // Accepting input pixels (COMPUTE, ungated)
@@ -98,12 +98,12 @@ module conv_fsm #(
     output wire busy_o,  // Job in progress (spans every kernel's pass)
     output wire done_o,  // Job complete (all kernels done)
     output wire [STATE_WIDTH-1:0] state_o,  // Current state (observability)
-    output wire [(N_Kernel>1 ? $clog2(N_Kernel) : 1)-1:0] kernel_idx_o,  // Current pass's kernel/channel index
+    output wire [(NUM_KERNELS>1 ? $clog2(NUM_KERNELS) : 1)-1:0] kernel_idx_o,  // Current pass's kernel/channel index
     output wire replay_o  // High while this pass replays a stored frame (kernel_idx_o != 0)
 );
 
-    localparam KIDX_WIDTH  = (N_Kernel > 1) ? $clog2(N_Kernel) : 1;
-    localparam TOTAL_TAPS  = N_Kernel * N * N;
+    localparam KIDX_WIDTH  = (NUM_KERNELS > 1) ? $clog2(NUM_KERNELS) : 1;
+    localparam TOTAL_TAPS  = NUM_KERNELS * N * N;
 
     // State encoding
     localparam S_IDLE = 0;
@@ -147,7 +147,7 @@ module conv_fsm #(
     // The last cycle of a pass's pipeline drain, with more kernels left to go:
     // arms the pad inserter for the NEXT pass without leaving S_COMPUTE.
     wire pass_advance = (state_q == S_COMPUTE) && !output_stall_i &&
-                         (exit_cnt_q == 1) && (kernel_idx_q != N_Kernel-1);
+                         (exit_cnt_q == 1) && (kernel_idx_q != NUM_KERNELS-1);
 
     // Next-state
     always @(*) begin : next_state
@@ -165,7 +165,7 @@ module conv_fsm #(
                     kernel_idx_d = {KIDX_WIDTH{1'b0}};
                 end
             end
-            // Load the N_Kernel*N*N kernel coefficients, one per host write
+            // Load the NUM_KERNELS*N*N kernel coefficients, one per host write
             S_LOAD: begin
                 if (kernel_wr_valid_i) begin
                     load_cnt_d = (load_cnt_q == TOTAL_TAPS-1) ? 0 : load_cnt_q + 1;
@@ -184,7 +184,7 @@ module conv_fsm #(
                     end else if (exit_cnt_q > 0) begin
                         exit_cnt_d = exit_cnt_q - 1;
                         if (exit_cnt_q == 1) begin
-                            if (kernel_idx_q == N_Kernel-1) begin
+                            if (kernel_idx_q == NUM_KERNELS-1) begin
                                 state_d = S_DONE;  // Last kernel's pass drained: job done
                             end else begin
                                 kernel_idx_d = kernel_idx_q + 1'b1;  // Loop for the next kernel

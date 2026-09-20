@@ -25,6 +25,7 @@ vlog -work work -timescale "1ns/1ps" +incdir+$UVM_12_PATH/src $UVM_12_PATH/src/u
 puts "\n--- Compiling RTL Files ---"
 vlog -work work -timescale "1ns/1ps" "$SRC_PATH/control/conv_fsm.v"
 vlog -work work -timescale "1ns/1ps" "$SRC_PATH/control/pixel_counter.v"
+vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/frame_buffer.v"
 vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/kernel_reg_bank.v"
 vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/mac_chain.v"
 vlog -work work -timescale "1ns/1ps" "$SRC_PATH/datapath/output_fifo.v"

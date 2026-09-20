@@ -9,7 +9,7 @@
 // Description: NxN signed coefficient registers holding the programmable
 //              kernel(s); provides the write port for kernel loading.
 //
-//              N_Kernel independent NxN kernels are held in one flat array,
+//              NUM_KERNELS independent NxN kernels are held in one flat array,
 //              loaded back-to-back during S_LOAD (kernel 0's N*N taps, then
 //              kernel 1's N*N taps, ...). kernel_sel_i (the FSM's current pass
 //              index) picks which kernel's taps are presented on kernel_o.
@@ -18,7 +18,7 @@
 //
 // Revision:
 // Revision 0.01 - File Created
-// Revision 0.02 - Added N_Kernel (multiple kernel / output channel support)
+// Revision 0.02 - Added NUM_KERNELS (multiple kernel / output channel support)
 // Additional Comments:
 //
 //////////////////////////////////////////////////////////////////////////////////
@@ -26,18 +26,18 @@
 module kernel_reg_bank #(
     parameter N           = 3,  // Kernel Size
     parameter COEFF_WIDTH = 8,
-    parameter N_Kernel = 1   // Number of independently-loaded kernels
+    parameter NUM_KERNELS = 1   // Number of independently-loaded kernels
 ) (
     input wire clk_i,
     input wire rst_n_i,
     input wire load_valid_i,  // The Write Enable Signal
-    input wire [$clog2(N_Kernel*N*N)-1:0] load_addr_i,  // Flat address across all kernels
+    input wire [$clog2(NUM_KERNELS*N*N)-1:0] load_addr_i,  // Flat address across all kernels
     input wire [COEFF_WIDTH-1:0] load_data_i,  // The data to write
-    input wire [(N_Kernel>1 ? $clog2(N_Kernel) : 1)-1:0] kernel_sel_i,  // Which kernel to present
+    input wire [(NUM_KERNELS>1 ? $clog2(NUM_KERNELS) : 1)-1:0] kernel_sel_i,  // Which kernel to present
     output wire [N*N*COEFF_WIDTH-1:0] kernel_o  // The selected kernel's flattened output
 );
 
-    localparam TOTAL_TAPS = N_Kernel * N * N;
+    localparam TOTAL_TAPS = NUM_KERNELS * N * N;
 
     // Kernel coefficients (current state) - flat across all kernels
     reg signed [COEFF_WIDTH-1:0] kernel_q[0:TOTAL_TAPS-1];

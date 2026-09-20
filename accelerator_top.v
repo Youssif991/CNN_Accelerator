@@ -32,10 +32,10 @@
 //              the flag's one cycle of staleness and output_fifo still gates the
 //              write on exact readiness. See README.md (Design notes).
 //
-//              Multiple kernels (N_Kernel > 1): the host still streams the
+//              Multiple kernels (NUM_KERNELS > 1): the host still streams the
 //              image exactly once, on pass 0 (kernel 0). frame_buffer captures
 //              every accepted real pixel during that live pass; conv_fsm then
-//              loops S_COMPUTE for kernels 1..N_Kernel-1, and for those
+//              loops S_COMPUTE for kernels 1..NUM_KERNELS-1, and for those
 //              passes pixel_pad_inserter is fed from frame_buffer instead of
 //              the host's pixel_in_i/pixel_valid_i (replay is always "valid" -
 //              the data is already in on-chip memory). ready_o to the host is
@@ -56,13 +56,12 @@
 //
 // Revision:
 //   0.01 - File Created.
-//   0.02 - Added N_Kernel: multiple output channels via a replayed pass
+//   0.02 - Added NUM_KERNELS: multiple output channels via a replayed pass
 //          per kernel, fed by a new internal frame_buffer.
 //////////////////////////////////////////////////////////////////////////////////
 
 module accelerator_top #(
     parameter N = 3,  // Kernel size (N >= 2)
-    parameter N_Kernel = 2,  // Number of kernels / output channels per job
     parameter IMAGE_WIDTH = 32,  // Input feature-map width
     parameter IMAGE_HEIGHT = 32,  // Input feature-map height (real rows)
     parameter PIXEL_WIDTH = 8,  // Input pixel width (unsigned)
@@ -71,6 +70,7 @@ module accelerator_top #(
     parameter ROUND_ENABLE = 1,  // Round-half-up before truncation
     parameter FRAC_BITS    = 4,   // number of fractional bits in the fixed-point kernel
     parameter PIPE_STAGES = 11,  // mac_chain's 9 DSP multiply-adders + sat_round's 2 stages
+    parameter NUM_KERNELS = 1,  // Number of kernels / output channels per job
     parameter PAD_ROWS_BEFORE = (N - 1) / 2,  // Zero rows prepended for top-edge same-padding
     parameter PAD_ROWS_AFTER = (N + 1) / 2,  // Zero rows appended so the last rows still complete
     parameter PADDED_HEIGHT = IMAGE_HEIGHT + N,  // Padded row count (real rows + N pad rows)
@@ -91,19 +91,19 @@ module accelerator_top #(
     output wire [1:0] state_o,  // FSM state (observability)
     output wire result_valid_o,  // Output word available (FIFO not empty)
     output wire [OUT_WIDTH-1:0] result_o,  // Output data (FIFO read)
-    output wire [(N_Kernel>1 ? $clog2(N_Kernel) : 1)-1:0] result_kernel_idx_o,  // Source kernel/channel of result_o
+    output wire [(NUM_KERNELS>1 ? $clog2(NUM_KERNELS) : 1)-1:0] result_kernel_idx_o,  // Source kernel/channel of result_o
     output wire result_tlast_o,  // Last output word of the current kernel's pass
     input wire result_ready_i,  // Output ready
     output wire ready_o  // Accepting input pixels (AXI-Stream TREADY); only asserts on the live pass
 );
 
-    localparam KIDX_WIDTH = (N_Kernel > 1) ? $clog2(N_Kernel) : 1;
+    localparam KIDX_WIDTH = (NUM_KERNELS > 1) ? $clog2(NUM_KERNELS) : 1;
 
     // Control-unit interconnect
     wire [PIX_ADDR_WIDTH-1:0] pix_addr;
     wire pix_last;
     wire kernel_we;
-    wire [$clog2(N_Kernel*N*N)-1:0] kernel_addr;
+    wire [$clog2(NUM_KERNELS*N*N)-1:0] kernel_addr;
     wire shift_valid;
     wire stream_start;  // One-cycle pulse: (re)arms pixel_pad_inserter for the current pass
     wire fsm_ready;  // conv_fsm's own readiness (gates the pad inserter)
@@ -264,7 +264,7 @@ module accelerator_top #(
     assign result_tlast_o      = fifo_rd_data[OUT_WIDTH+KIDX_WIDTH];
 
     // Frame buffer: captures the live pass, replays it for later kernels
-    frame_buffer#(
+    frame_buffer #(
         .IMAGE_WIDTH (IMAGE_WIDTH),
         .IMAGE_HEIGHT(IMAGE_HEIGHT),
         .PIXEL_WIDTH (PIXEL_WIDTH)
@@ -301,7 +301,7 @@ module accelerator_top #(
     );
 
     // Host-facing ready: only assert on the live pass, so the host streams the
-    // image exactly once regardless of N_Kernel.
+    // image exactly once regardless of NUM_KERNELS.
     assign ready_o = pad_ready && live_pass;
 
     // Frame controller
@@ -313,7 +313,7 @@ module accelerator_top #(
         .PIPE_STAGES   (PIPE_STAGES),
         .PIX_ADDR_WIDTH(PIX_ADDR_WIDTH),
         .STATE_WIDTH   (2),
-        .N_Kernel   (N_Kernel)
+        .NUM_KERNELS   (NUM_KERNELS)
     ) u_fsm (
         .clk_i           (clk_i),
         .rst_n_i         (rst_n_i),
@@ -377,7 +377,7 @@ module accelerator_top #(
     kernel_reg_bank #(
         .N           (N),
         .COEFF_WIDTH (COEFF_WIDTH),
-        .N_Kernel (N_Kernel)
+        .NUM_KERNELS (NUM_KERNELS)
     ) u_kernel_reg_bank (
         .clk_i        (clk_i),
         .rst_n_i      (rst_n_i),

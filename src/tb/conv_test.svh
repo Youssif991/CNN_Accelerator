@@ -19,6 +19,7 @@
 
 class conv_test extends my_test #(
     .N(3),
+    .N_Kernel(2),
     .IMAGE_WIDTH(8),
     .IMAGE_HEIGHT(8),
     .PIXEL_WIDTH(8),

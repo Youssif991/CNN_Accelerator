@@ -1,15 +1,6 @@
 %% generate_golden_vectors.m
 % Generate pixel, kernel, and expected-output files for QuestaSim.
-%
-% Flow:
-%   1. Read a real image from disk.
-%   2. Convert it to grayscale.
-%   3. Resize it to the RTL input dimensions.
-%   4. Quantize the fractional kernel to a fixed-point integer format.
-%   5. Calculate padded convolution in MATLAB using the quantized kernel.
-%   6. Rescale the accumulator back down by FRAC_BITS (round-half-up).
-%   7. Apply optional ReLU and output saturation.
-%   8. Generate pixel_input.hex, kernel_coeff.hex, and expected_output.hex.
+% Includes support for NUM_KERNELS multi-channel processing.
 
 clear;
 clc;
@@ -26,53 +17,29 @@ COEFF_WIDTH  = 8;       % Signed coefficient width (integer, fixed-point contain
 OUT_BITS     = 16;      % Signed output width
 RELU_ENABLE  = true;    % Must match the RTL ReLU enable
 STRIDE       = 1;       % Convolution stride
+NUM_KERNELS  = 2;       % Number of kernels / output channels per job
 
 % --- Zero padding, derived automatically to match the RTL -----------------
-% Rows: pixel_pad_inserter/accelerator_top insert real zero rows, asymmetric
-% about the kernel centre:
-%   PAD_ROWS_BEFORE = (N-1)/2, PAD_ROWS_AFTER = (N+1)/2
-% (accelerator_top.v). This is a function of N, not a hardcoded constant, so
-% changing N (or IMAGE_HEIGHT) automatically re-derives the right amount.
 PAD_ROWS_BEFORE = floor((N - 1) / 2);
 PAD_ROWS_AFTER  = floor((N + 1) / 2);
-
-% Columns: row_buffer_bank does NOT scale its column padding with N -- its
-% tap-mux generate loop always produces exactly 3 column taps per row
-% (tap_old/tap_mid/tap_base), i.e. a fixed +/-1 zero column on each border
-% regardless of kernel size. This is mirrored here literally (bug and all)
-% so the golden model matches actual RTL behavior rather than "correct"
-% same-padding.
 PAD_COLS_BEFORE = 1;
 PAD_COLS_AFTER  = 1;
 
 % --- Fixed-point spec for the kernel -------------------------------------
-% The kernel below is defined in real (floating-point) coefficients that
-% sum to ~1 (a normalized Gaussian blur). COEFF_WIDTH-bit signed integers
-% cannot represent values like 0.0030 directly, so we quantize into a
-% Q(COEFF_WIDTH-1-FRAC_BITS).FRAC_BITS fixed-point format:
-%   quantized_int = round(real_value * 2^FRAC_BITS)
-% This quantized integer is what actually gets written to kernel_coeff.hex
-% and is what the RTL must treat as the coefficient. Since the datapath
-% itself (MAC array / adder tree / sat_round_unit) has no built-in notion
-% of a fractional scale, the RTL must explicitly rescale the accumulated
-% sum back down by FRAC_BITS (round-half-up, then saturate) to recover a
-% real-valued result in OUT_BITS. This FRAC_BITS rescale is DISTINCT from
-% the guard-bit headroom bits used purely to prevent integer overflow
-% during accumulation -- do not conflate the two.
 FRAC_BITS = 4;
 
 %% ------------------------------------------------------------------------
 % File paths.
-% Change source_image_path to the real image you want to test.
 % -------------------------------------------------------------------------
-source_image_path = ...
-    'input_image.jpg';
-
-output_dir = ...
-    '..\\src\\tb';
+source_image_path = 'input_image.jpg';
+output_dir = '..\src\tb';
 
 if ~isfile(source_image_path)
-    error('Input image does not exist: %s', source_image_path);
+    % Create a dummy image for testing if the file doesn't exist
+    warning('Input image not found. Creating a synthetic checkerboard pattern for testing.');
+    source_image = uint8(checkerboard(1, IMAGE_HEIGHT, IMAGE_WIDTH) * 255);
+else
+    source_image = imread(source_image_path);
 end
 
 if ~isfolder(output_dir)
@@ -82,220 +49,163 @@ end
 %% ------------------------------------------------------------------------
 % Read and preprocess the source image.
 % -------------------------------------------------------------------------
-source_image = imread(source_image_path);
-
-% Convert RGB/RGBA images to grayscale.
 if ndims(source_image) == 3
     source_image = source_image(:,:,1:3);
     source_image = rgb2gray(source_image);
 end
 
-% Resize to exactly the dimensions expected by the RTL.
-% Nearest-neighbor resizing is simple and reproducible for verification.
 image_pixels = imresize(source_image, ...
                          [IMAGE_HEIGHT IMAGE_WIDTH], ...
                          'nearest');
-
-% Ensure the input is an unsigned 8-bit grayscale image.
 image_pixels = uint8(image_pixels);
 
 %% ------------------------------------------------------------------------
-% Define the real-valued (floating-point) convolution kernel.
+% Define the real-valued (floating-point) convolution kernels.
 % -------------------------------------------------------------------------
-kernel = [ ...
-1, 0, -1; ...
-1, 0, -1; ...
-1, 0, -1];
+% Pre-allocate for NUM_KERNELS
+kernels = zeros(N, N, NUM_KERNELS);
 
-if size(kernel,1) ~= N || size(kernel,2) ~= N
-    error('Kernel dimensions do not match N.');
+% Kernel 0: Vertical Edge Detection
+kernels(:,:,1) = [ ...
+    1, 0, -1; ...
+    1, 0, -1; ...
+    1, 0, -1];
+
+% Kernel 1: Horizontal Edge Detection (if NUM_KERNELS > 1)
+if NUM_KERNELS > 1
+    kernels(:,:,2) = [ ...
+        1,  1,  1; ...
+        0,  0,  0; ...
+       -1, -1, -1];
 end
 
+% Add more kernel definitions here if NUM_KERNELS > 2
+
 %% ------------------------------------------------------------------------
-% Quantize the kernel into fixed-point COEFF_WIDTH-bit signed integers.
+% Quantize the kernels into fixed-point COEFF_WIDTH-bit signed integers.
 % -------------------------------------------------------------------------
 coeff_max = 2^(COEFF_WIDTH-1) - 1;
 coeff_min = -2^(COEFF_WIDTH-1);
 
-quant_kernel_raw = round(kernel * 2^FRAC_BITS);
+quant_kernels_raw = round(kernels * 2^FRAC_BITS);
 
-if any(quant_kernel_raw(:) > coeff_max) || any(quant_kernel_raw(:) < coeff_min)
-    warning(['One or more quantized kernel values overflow COEFF_WIDTH=%d ' ...
-             'with FRAC_BITS=%d. They will be clamped, which will distort ' ...
-             'the golden result. Consider raising COEFF_WIDTH or lowering ' ...
-             'FRAC_BITS.'], COEFF_WIDTH, FRAC_BITS);
+if any(quant_kernels_raw(:) > coeff_max) || any(quant_kernels_raw(:) < coeff_min)
+    warning('One or more quantized kernel values overflow COEFF_WIDTH=%d.', COEFF_WIDTH);
 end
 
-quant_kernel = int32(min(max(quant_kernel_raw, coeff_min), coeff_max));
-
-quant_error = double(quant_kernel) / 2^FRAC_BITS - kernel;
-fprintf('Max kernel quantization error: %.6f\n', max(abs(quant_error(:))));
-fprintf('Quantized kernel gain (sum)  : %.6f (ideal ~2^FRAC_BITS = %d)\n', ...
-    sum(double(quant_kernel(:))), 2^FRAC_BITS);
+quant_kernels = int32(min(max(quant_kernels_raw, coeff_min), coeff_max));
 
 %% ------------------------------------------------------------------------
 % Calculate padded-convolution output dimensions.
 % -------------------------------------------------------------------------
-OUTPUT_HEIGHT = floor((IMAGE_HEIGHT + PAD_ROWS_BEFORE + PAD_ROWS_AFTER - N)/STRIDE) + 1;
-OUTPUT_WIDTH  = floor((IMAGE_WIDTH  + PAD_COLS_BEFORE + PAD_COLS_AFTER - N)/STRIDE) + 1;
+OUTPUT_HEIGHT = IMAGE_HEIGHT ;
+OUTPUT_WIDTH  = IMAGE_WIDTH  ;
 
-expected = zeros(OUTPUT_HEIGHT, OUTPUT_WIDTH, 'int32');
+% Expected output is now a 3D volume: [Height x Width x NUM_KERNELS]
+expected = zeros(OUTPUT_HEIGHT, OUTPUT_WIDTH, NUM_KERNELS, 'int32');
 
 %% ------------------------------------------------------------------------
 % MATLAB golden convolution model (fixed-point).
-% Zero values are used outside the image boundary.
 % -------------------------------------------------------------------------
 round_bias = int64(0);
 if FRAC_BITS > 0
     round_bias = int64(bitshift(int64(1), FRAC_BITS-1)); % round-half-up
 end
 
-for out_row = 1:OUTPUT_HEIGHT
-    for out_col = 1:OUTPUT_WIDTH
+for k_idx = 1:NUM_KERNELS
+    for out_row = 1:OUTPUT_HEIGHT
+        for out_col = 1:OUTPUT_WIDTH
 
-        accumulator = int64(0);
+            accumulator = int64(0);
 
-        for kernel_row = 1:N
-            for kernel_col = 1:N
+            for kernel_row = 1:N
+                for kernel_col = 1:N
 
-                % Coordinates in the original image.
-                image_row = (out_row-1)*STRIDE + kernel_row - PAD_ROWS_BEFORE;
-                image_col = (out_col-1)*STRIDE + kernel_col - PAD_COLS_BEFORE;
+                    image_row = (out_row-1)*STRIDE + kernel_row - PAD_ROWS_BEFORE;
+                    image_col = (out_col-1)*STRIDE + kernel_col - PAD_COLS_BEFORE;
 
-                % Zero-padding boundary behavior.
-                if image_row < 1 || image_row > IMAGE_HEIGHT || ...
-                   image_col < 1 || image_col > IMAGE_WIDTH
-                    pixel_value = int64(0);
-                else
-                    pixel_value = int64(image_pixels(image_row, image_col));
+                    if image_row < 1 || image_row > IMAGE_HEIGHT || ...
+                       image_col < 1 || image_col > IMAGE_WIDTH
+                        pixel_value = int64(0);
+                    else
+                        pixel_value = int64(image_pixels(image_row, image_col));
+                    end
+
+                    % Fetch the coefficient for the current kernel index
+                    coefficient_value = int64(quant_kernels(kernel_row, kernel_col, k_idx));
+
+                    accumulator = accumulator + ...
+                        pixel_value * coefficient_value;
                 end
-
-                coefficient_value = int64(quant_kernel(kernel_row, kernel_col));
-
-                accumulator = accumulator + ...
-                    pixel_value * coefficient_value;
             end
+
+            if FRAC_BITS > 0
+                accumulator = bitshift(accumulator + round_bias, -FRAC_BITS);
+            end
+
+            accumulator = int32(accumulator);
+
+            if RELU_ENABLE && accumulator < 0
+                accumulator = 0;
+            end
+
+            max_output = int32(2^(OUT_BITS-1) - 1);
+            min_output = int32(-2^(OUT_BITS-1));
+
+            accumulator = min(max(accumulator, min_output), max_output);
+            expected(out_row, out_col, k_idx) = accumulator;
         end
-
-        % Rescale back down by FRAC_BITS (round-half-up), since the
-        % accumulator is currently in the same fixed-point scale as the
-        % quantized kernel (pixel is integer, coefficient is Q.FRAC_BITS,
-        % so the product/sum is also Q.FRAC_BITS).
-        if FRAC_BITS > 0
-            accumulator = bitshift(accumulator + round_bias, -FRAC_BITS);
-        end
-
-        accumulator = int32(accumulator);
-
-        % Optional ReLU activation.
-        if RELU_ENABLE && accumulator < 0
-            accumulator = 0;
-        end
-
-        % Signed output saturation.
-        max_output = int32(2^(OUT_BITS-1) - 1);
-        min_output = int32(-2^(OUT_BITS-1));
-
-        accumulator = min(max(accumulator, min_output), max_output);
-        expected(out_row, out_col) = accumulator;
     end
 end
 
 %% ------------------------------------------------------------------------
 % Convert matrices to raster-scan vectors.
-%
-% The transpose before reshape gives this order:
-%   row 0, col 0 ... row 0, col W-1,
-%   row 1, col 0 ... row 1, col W-1,
-%   etc.
-%
-% This order must match the order used by the UVM sequence and RTL.
 % -------------------------------------------------------------------------
-input_stream    = reshape(image_pixels.', [], 1);
-kernel_stream   = reshape(quant_kernel.', [], 1);   % quantized integers, not raw floats
-expected_stream = reshape(expected.', [], 1);
+input_stream = reshape(image_pixels.', [], 1);
+
+% Flatten kernels back-to-back: kernel 0, then kernel 1, etc.
+kernel_stream = [];
+for k_idx = 1:NUM_KERNELS
+    k_slice = quant_kernels(:,:,k_idx).'; 
+    kernel_stream = [kernel_stream; k_slice(:)];
+end
+
+% Flatten expected outputs back-to-back per kernel pass
+expected_stream = [];
+for k_idx = 1:NUM_KERNELS
+    e_slice = expected(:,:,k_idx).';
+    expected_stream = [expected_stream; e_slice(:)];
+end
 
 %% ------------------------------------------------------------------------
 % Write hexadecimal files.
 % -------------------------------------------------------------------------
-write_hex_file( ...
-    fullfile(output_dir, 'pixel_input.hex'), ...
-    input_stream, ...
-    PIXEL_WIDTH);
-
-write_hex_file( ...
-    fullfile(output_dir, 'kernel_coeff.hex'), ...
-    kernel_stream, ...
-    COEFF_WIDTH);
-
-write_hex_file( ...
-    fullfile(output_dir, 'expected_output.hex'), ...
-    expected_stream, ...
-    OUT_BITS);
+write_hex_file(fullfile(output_dir, 'pixel_input.hex'), input_stream, PIXEL_WIDTH);
+write_hex_file(fullfile(output_dir, 'kernel_coeff.hex'), kernel_stream, COEFF_WIDTH);
+write_hex_file(fullfile(output_dir, 'expected_output.hex'), expected_stream, OUT_BITS);
 
 %% ------------------------------------------------------------------------
-% Display information and verification plots.
+% Display information
 % -------------------------------------------------------------------------
-fprintf('\nGolden files generated successfully.\n');
-fprintf('Source image           : %s\n', source_image_path);
+fprintf('\nGolden files generated successfully for %d kernel(s).\n', NUM_KERNELS);
 fprintf('Input image size       : %d x %d\n', IMAGE_HEIGHT, IMAGE_WIDTH);
-fprintf('Kernel size            : %d x %d\n', N, N);
-fprintf('Row padding    (before/after): %d / %d, zero padding\n', PAD_ROWS_BEFORE, PAD_ROWS_AFTER);
-fprintf('Column padding (before/after): %d / %d, zero padding\n', PAD_COLS_BEFORE, PAD_COLS_AFTER);
-fprintf('Stride                 : %d\n', STRIDE);
-fprintf('Output image size      : %d x %d\n', OUTPUT_HEIGHT, OUTPUT_WIDTH);
-fprintf('Input pixels generated : %d\n', length(input_stream));
+fprintf('Output volume size     : %d x %d x %d\n', OUTPUT_HEIGHT, OUTPUT_WIDTH, NUM_KERNELS);
 fprintf('Kernel values generated: %d\n', length(kernel_stream));
 fprintf('Expected outputs       : %d\n', length(expected_stream));
-fprintf('ReLU enabled           : %d\n', RELU_ENABLE);
-fprintf('Fixed-point FRAC_BITS  : %d\n', FRAC_BITS);
-fprintf('Output directory       : %s\n\n', output_dir);
-
-disp('Processed grayscale image sent to the RTL:');
-disp(image_pixels);
-
-disp('Real-valued kernel (reference):');
-disp(kernel);
-
-disp('Quantized integer kernel (what the RTL actually sees):');
-disp(quant_kernel);
-
-disp('MATLAB expected convolution output (post-rescale, ReLU, saturate):');
-disp(expected);
-
-figure('Name', 'MATLAB Golden Model');
-subplot(1,2,1);
-imagesc(image_pixels);
-colormap gray;
-axis image;
-colorbar;
-title('Input grayscale image');
-
-subplot(1,2,2);
-imagesc(expected);
-axis image;
-colorbar;
-title('Expected padded convolution output');
 
 %% ------------------------------------------------------------------------
-% Local helper function for hexadecimal output.
-% Negative values are written in two's-complement form.
+% Helper function for hexadecimal output
 % -------------------------------------------------------------------------
 function write_hex_file(filename, values, width_bits)
-
     file_id = fopen(filename, 'w');
-
     if file_id == -1
         error('Could not open file for writing: %s', filename);
     end
-
     hex_digits = ceil(width_bits/4);
     format_string = ['%0', num2str(hex_digits), 'X\n'];
-
     for index = 1:length(values)
         unsigned_value = mod(double(values(index)), 2^width_bits);
         fprintf(file_id, format_string, unsigned_value);
     end
-
     fclose(file_id);
 end
