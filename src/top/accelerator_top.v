@@ -62,7 +62,7 @@
 
 module accelerator_top #(
     parameter N = 3,  // Kernel size (N >= 2)
-    parameter N_Kernel = 2,  // Number of kernels / output channels per job
+    parameter N_Kernel = 1,  // Number of kernels / output channels per job
     parameter IMAGE_WIDTH = 32,  // Input feature-map width
     parameter IMAGE_HEIGHT = 32,  // Input feature-map height (real rows)
     parameter PIXEL_WIDTH = 8,  // Input pixel width (unsigned)
