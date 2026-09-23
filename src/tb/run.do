@@ -40,6 +40,7 @@ vlog -work work -timescale "1ns/1ps" "$SRC_PATH/top/accelerator_top.v"
 
 # 5. Compile Testbench Files
 puts "\n--- Compiling Testbench Files ---"
+vlog -work work -timescale "1ns/1ps" +incdir+$UVM_12_PATH/src +incdir+$TB_PATH "$TB_PATH/conv_params_pkg.svh"
 vlog -work work -timescale "1ns/1ps" +incdir+$UVM_12_PATH/src +incdir+$TB_PATH "$TB_PATH/conv_pack.svh"
 vlog -work work -timescale "1ns/1ps" +incdir+$UVM_12_PATH/src +incdir+$TB_PATH "$TB_PATH/conv_top.sv"
 
