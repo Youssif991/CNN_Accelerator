@@ -20,29 +20,36 @@
 //              resets on rd_rst_addr_i (tied to the FSM's per-pass
 //              stream_start pulse) so every replay pass starts from pixel 0.
 //
-//              Combinational read, like row_buffer_bank/kernel_reg_bank: the
-//              data at the current read address is presented the same cycle
-//              it is consumed (rd_en_i), matching the way pixel_in_i is a
-//              combinational value sampled the cycle it's accepted.
+//              RAM inference: mem[] carries a ram_style="block" attribute to
+//              force mapping onto a Block RAM primitive (RAMB36/RAMB18 on
+//              this 7-series part) instead of distributed RAM or a
+//              flip-flop + wide-mux fallback. The mem[] write still lives in
+//              its own reset-free always block with no other register
+//              sharing it (same isolation rule as row_buffer_bank/
+//              kernel_reg_bank) - that isolation is necessary but, without
+//              the attribute, not sufficient to guarantee BRAM over
+//              distributed RAM at this depth; the attribute makes the
+//              choice explicit instead of leaving it to the tool's own
+//              area/depth heuristic.
 //
-//              RAM inference: the mem[] write lives in its own always block
-//              with no reset in its sensitivity list and no other register
-//              sharing that block (same isolation rule as row_buffer_bank's
-//              row_mem and kernel_reg_bank's kernel_q). The address counters
-//              (wr_addr_q / rd_addr_q) are reset-bearing registers, but they
-//              live in their own separate always blocks so the reset never
-//              touches the memory array itself. Mixing the two in one block
-//              is what stops Vivado from mapping mem[] to
-//              distributed/block RAM and forces a flip-flop + wide-mux
-//              fallback instead.
+//              Read latency changed: mem[] is now registered on read
+//              (Block RAM's own output register) instead of combinational,
+//              so rd_data_o is presented one cycle AFTER rd_en_i, not the
+//              same cycle. This is the standard BRAM read timing and is a
+//              real timing/behavioral difference from the previous
+//              distributed-RAM version - the caller's rd_en_i sequencing
+//              must account for this one-cycle shift.
 //
 // Dependencies: none (leaf module)
 //
 // Revision:
 //   0.01 - File Created (multiple-kernel feature).
-//   0.02 - Split the mem[] write into its own reset-free always block
-//          (previously shared with wr_addr_q's reset), so Vivado can infer
-//          RAM for mem[] instead of falling back to registers + a wide mux.
+//   0.02 - Split the mem[] write into its own reset-free always block so
+//          Vivado can infer RAM for mem[] instead of falling back to
+//          registers + a wide mux.
+//   0.03 - Added ram_style="block" attribute to force Block RAM mapping
+//          (XC7Z020 RAMB36E1/RAMB18E1) instead of distributed RAM, and
+//          registered the read output to match BRAM's native timing.
 //////////////////////////////////////////////////////////////////////////////////
 
 module frame_buffer#(
@@ -62,13 +69,16 @@ module frame_buffer#(
     input  wire                     rd_en_i,        // Consumed a replay pixel this cycle
     input  wire                     rd_rst_addr_i,  // Restart the read address (pass start)
     output wire [PIXEL_WIDTH-1:0]   rd_data_o       // Pixel at the current read address
+                                                     // (registered: valid one cycle after rd_en_i)
 );
 
     localparam TOTAL      = IMAGE_WIDTH * IMAGE_HEIGHT;
     localparam ADDR_WIDTH = $clog2(TOTAL);
 
-    // Flat frame storage (one real image, row-major)
-    reg [PIXEL_WIDTH-1:0] mem[0:TOTAL-1];
+    // Flat frame storage (one real image, row-major). ram_style="block"
+    // forces Block RAM inference on this 7-series part instead of
+    // distributed RAM.
+    (* ram_style = "block" *) reg [PIXEL_WIDTH-1:0] mem[0:TOTAL-1];
 
     // Write address (current)
     reg [ADDR_WIDTH-1:0] wr_addr_q;
@@ -109,11 +119,31 @@ module frame_buffer#(
 
     // Read-address state update
     always @(posedge clk_i or negedge rst_n_i) begin : rd_addr_state
-        if (!rst_n_i) rd_addr_q <= {ADDR_WIDTH{1'b0}};
-        else          rd_addr_q <= rd_addr_d;
+        if (!rst_n_i) begin
+            rd_addr_q <= {ADDR_WIDTH{1'b0}};
+        end else if (rd_rst_addr_i) begin
+            rd_addr_q <= {ADDR_WIDTH{1'b0}};
+        end else if (rd_en_i) begin
+            rd_addr_q <= rd_addr_q + 1'b1;
+        end
     end
 
-    // Combinational read (same style as row_buffer_bank/kernel_reg_bank)
-    assign rd_data_o = mem[rd_addr_q];
+    // Registered read: Block RAM's native read port is synchronous, so the
+    // read data is captured into a register here (no reset: keeps this in
+    // the same reset-free style as the memory write above, and matches how
+    // RAMB36E1/RAMB18E1's own output register behaves - it has no
+    // meaningful "reset value" worth modeling since mem[] itself is
+    // uninitialized until written).
+    reg [PIXEL_WIDTH-1:0] rd_data_q;
+
+    always @(posedge clk_i) begin : mem_read
+        if (rd_rst_addr_i) begin
+            rd_data_q <= mem[0];                  // Pre-load Pixel 0 ready for read
+        end else if (rd_en_i) begin
+            rd_data_q <= mem[rd_addr_q + 1'b1];   // Fetch next pixel for subsequent cycles
+        end
+    end
+
+    assign rd_data_o = rd_data_q;
 
 endmodule
