@@ -7,41 +7,51 @@
 // Module Name: kernel_reg_bank
 // Tool Versions: Vivado 2025.2
 // Description: NxN signed coefficient registers holding the programmable
-//              kernel; provides the write port for kernel loading.
+//              kernel(s); provides the write port for kernel loading.
+//
+//              N_Kernel independent NxN kernels are held in one flat array,
+//              loaded back-to-back during S_LOAD (kernel 0's N*N taps, then
+//              kernel 1's N*N taps, ...). kernel_sel_i (the FSM's current pass
+//              index) picks which kernel's taps are presented on kernel_o.
 //
 // Dependencies: none (leaf module)
 //
 // Revision:
 // Revision 0.01 - File Created
+// Revision 0.02 - Added N_Kernel (multiple kernel / output channel support)
 // Additional Comments:
 //
 //////////////////////////////////////////////////////////////////////////////////
 
 module kernel_reg_bank #(
-    parameter N = 3,  // Kernel Size
-    parameter COEFF_WIDTH = 8
+    parameter N           = 3,  // Kernel Size
+    parameter COEFF_WIDTH = 8,
+    parameter N_Kernel = 1   // Number of independently-loaded kernels
 ) (
     input wire clk_i,
     input wire rst_n_i,
     input wire load_valid_i,  // The Write Enable Signal
-    input wire [$clog2(N*N)-1:0] load_addr_i,  // The address to write to
+    input wire [$clog2(N_Kernel*N*N)-1:0] load_addr_i,  // Flat address across all kernels
     input wire [COEFF_WIDTH-1:0] load_data_i,  // The data to write
-    output wire [N*N*COEFF_WIDTH-1:0] kernel_o  // The kernel output
+    input wire [(N_Kernel>1 ? $clog2(N_Kernel) : 1)-1:0] kernel_sel_i,  // Which kernel to present
+    output wire [N*N*COEFF_WIDTH-1:0] kernel_o  // The selected kernel's flattened output
 );
 
-    // Kernel coefficients (current state)
-    reg signed [COEFF_WIDTH-1:0] kernel_q[0:N*N-1];
+    localparam TOTAL_TAPS = N_Kernel * N * N;
+
+    // Kernel coefficients (current state) - flat across all kernels
+    reg signed [COEFF_WIDTH-1:0] kernel_q[0:TOTAL_TAPS-1];
     // Kernel coefficients (next-state)
-    reg signed [COEFF_WIDTH-1:0] kernel_d[0:N*N-1];
+    reg signed [COEFF_WIDTH-1:0] kernel_d[0:TOTAL_TAPS-1];
 
     integer i;  // Loop index
 
     // Next-state
     always @(*) begin : next_state
-        for (i = 0; i < N * N; i = i + 1) begin
+        for (i = 0; i < TOTAL_TAPS; i = i + 1) begin
             kernel_d[i] = kernel_q[i];  // Here we assign the default value
         end
-        if (load_valid_i && (load_addr_i < N * N)) begin
+        if (load_valid_i && (load_addr_i < TOTAL_TAPS)) begin
             kernel_d[load_addr_i] = load_data_i; // Now we override the default value while making sure we do not go out of bounds
         end
     end
@@ -49,21 +59,21 @@ module kernel_reg_bank #(
     // State update
     always @(posedge clk_i or negedge rst_n_i) begin : state
         if (!rst_n_i) begin
-            for (i = 0; i < N * N; i = i + 1) begin
+            for (i = 0; i < TOTAL_TAPS; i = i + 1) begin
                 kernel_q[i] <= 0;  // Reset all kernel values
             end
         end else begin
-            for (i = 0; i < N * N; i = i + 1) begin
+            for (i = 0; i < TOTAL_TAPS; i = i + 1) begin
                 kernel_q[i] <= kernel_d[i];  // Assign the next state
             end
         end
     end
 
-    // Combinational read
+    // Combinational read: present the taps of the currently-selected kernel only
     genvar g;
     generate
         for (g = 0; g < N * N; g = g + 1) begin : gen_kernel_out
-            assign kernel_o[COEFF_WIDTH*g+:COEFF_WIDTH] = kernel_q[g]; // Flatten the kernel then assign the values to it
+            assign kernel_o[COEFF_WIDTH*g+:COEFF_WIDTH] = kernel_q[kernel_sel_i*(N*N) + g]; // Flatten the selected kernel then assign the values to it
         end
     endgenerate
 

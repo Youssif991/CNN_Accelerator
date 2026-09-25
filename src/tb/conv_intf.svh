@@ -31,7 +31,7 @@ interface conv_intf #(
 
     logic                   busy_o;
     logic                   done_o;
-    logic [2:0]             state_o;
+    logic [1:0]             state_o;
     logic                   result_valid_o;
     logic [OUT_WIDTH-1:0]   result_o;
     logic                   result_tlast_o;
@@ -65,6 +65,7 @@ interface conv_intf #(
         output kernel_wr_data_i;
         output relu_en_i;
         output result_ready_i;
+        input ready_o;
     endclocking
 
 endinterface

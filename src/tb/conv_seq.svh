@@ -114,19 +114,27 @@ task  conv_seq::store_cycle(bit result_ready = 1'b1 ,  bit relu_en = 1'b0);
 endtask
 
 task conv_seq::body();
-    bit [COEFF_WIDTH-1:0] kernel_data [0:N*N-1];
+    bit [COEFF_WIDTH-1:0] kernel_data [0:N*N*N_Kernel-1];
     bit [PIXEL_WIDTH-1:0] pixel_data  [0:IMAGE_HEIGHT*IMAGE_WIDTH-1];
     bit result_ready;
     bit relu_en = 1'b1;
 
-    $readmemh("src/tb/kernel_coeff.hex", kernel_data);
-    $readmemh("src/tb/pixel_input.hex", pixel_data);
+    int fd_kernel, fd_pixel;
 
+    fd_kernel = $fopen("kernel_coeff.hex", "r");
+    if (fd_kernel == 0) `uvm_fatal("KERNEL_FILE", "Could not open kernel_coeff.hex");
+    $fclose(fd_kernel);
+    $readmemh("kernel_coeff.hex", kernel_data);
+
+    fd_pixel = $fopen("pixel_input.hex", "r");
+    if (fd_pixel == 0) `uvm_fatal("PIXEL_FILE", "Could not open pixel_input.hex");
+    $fclose(fd_pixel);
+    $readmemh("pixel_input.hex", pixel_data);
     // Load kernel coefficients
     idle_cycle( 2 , 1'b1);
     get_ready(1'b1 , 1'b0 , relu_en);
 
-    for (int i = 0; i < N*N; i++) begin
+    for (int i = 0; i < N*N*N_Kernel; i++) begin
         load_cycle(kernel_data[i] , 1'b1 , 1'b1 , relu_en);
     end
     
@@ -136,11 +144,15 @@ task conv_seq::body();
     end
     
     // Store results
+<<<<<<< HEAD
 <<<<<<< Updated upstream
     for (int i = 0; i < IMAGE_HEIGHT * IMAGE_WIDTH; i++) begin
 =======
     for (int i = 0; i < IMAGE_HEIGHT* IMAGE_WIDTH * N_Kernel; i++) begin
 >>>>>>> Stashed changes
+=======
+    for (int i = 0; i < IMAGE_HEIGHT * IMAGE_WIDTH * N_Kernel; i++) begin
+>>>>>>> 10c0c55f4f904b0d6ecf79fc838e54d583dca05c
         store_cycle(1'b1 , relu_en);
     end
 endtask
