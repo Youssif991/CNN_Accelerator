@@ -92,7 +92,7 @@ module accelerator_top #(
     parameter OUT_WIDTH = 16,  // Output pixel width (signed)
     parameter ROUND_ENABLE = 1,  // Round-half-up before truncation
     parameter FRAC_BITS    = 4,   // number of fractional bits in the fixed-point kernel
-    parameter PIPE_STAGES = 11,  // mac_chain's 9 DSP multiply-adders + sat_round's 2 stages
+    parameter PIPE_STAGES = N*N + 2,  // mac_chain's 9 DSP multiply-adders + sat_round's 2 stages
     parameter PAD_ROWS_BEFORE = (N - 1) / 2,  // Zero rows prepended for top-edge same-padding
     parameter PAD_ROWS_AFTER = (N + 1) / 2,  // Zero rows appended so the last rows still complete
     parameter PADDED_HEIGHT = IMAGE_HEIGHT + N,  // Padded row count (real rows + N pad rows)

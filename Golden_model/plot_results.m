@@ -14,7 +14,7 @@ clear; clc; close all;
 %  PARAMETERS  (must match the RTL/testbench configuration used to
 %  produce the hex files)
 %  -----------------------------------------------------------------------
-N            = 5;
+N            = 3;
 IMAGE_WIDTH  = 64;
 IMAGE_HEIGHT = 64;
 PIXEL_WIDTH  = 8;
@@ -51,12 +51,7 @@ PAD_COLS_AFTER  = floor((N + 1) / 2);   % informational only, see note above
 kernels = zeros(N, N, NUM_KERNELS);
 
 if NUM_KERNELS >= 1
-    kernels(:, :, 1) = [ ...
-     0,  0, -1,  0,  0; ...
-     0, -1, -2, -1,  0; ...
-    -1, -2, 16, -2, -1; ...
-     0, -1, -2, -1,  0; ...
-     0,  0, -1,  0,  0];  % kernel 1: vertical edge detector
+    kernels(:, :, 1) = [1 0 -1 ; 1 0 -1 ; 1 0 -1]  % kernel 1: vertical edge detector
 end
 if NUM_KERNELS >= 2
     kernels(:, :, 2) = [1 1 1; 0 0 0; -1 -1 -1];   % kernel 2: horizontal edge detector
