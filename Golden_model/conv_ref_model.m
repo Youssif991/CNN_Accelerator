@@ -10,14 +10,14 @@ close all;
 % Parameters: these values must match the RTL/UVM configuration.
 % -------------------------------------------------------------------------
 N            = 3;       % Kernel size: N x N
-IMAGE_WIDTH  = 32;       % RTL image width
-IMAGE_HEIGHT = 32;       % RTL image height
+IMAGE_WIDTH  = 64;       % RTL image width
+IMAGE_HEIGHT = 64;       % RTL image height
 PIXEL_WIDTH  = 8;       % Unsigned grayscale pixel width
 COEFF_WIDTH  = 8;       % Signed coefficient width (integer, fixed-point container)
 OUT_BITS     = 16;      % Signed output width
 RELU_ENABLE  = true;    % Must match the RTL ReLU enable
 STRIDE       = 1;       % Convolution stride
-NUM_KERNELS  = 3;       % Number of kernels / output channels per job
+NUM_KERNELS  = 1;       % Number of kernels / output channels per job
 
 % --- Zero padding, derived automatically to match the RTL -----------------
 PAD_ROWS_BEFORE = floor((N - 1) / 2);
@@ -63,10 +63,10 @@ image_pixels = uint8(image_pixels);
 % Define the real-valued (floating-point) convolution kernels.
 % -------------------------------------------------------------------------
 % Kernel 0: Vertical Edge Detection
-kernels(:,:,1) = [ ...
-    1, 0, -1; ...
-    1, 0, -1; ...
-    1, 0, -1];
+kernels(:,:,1) = 1/9 *[ ...
+        1,  1,  1; ...
+        1,  1,  1; ...
+        1,  1,  1];
 
 % Kernel 1: Horizontal Edge Detection (if NUM_KERNELS > 1)
 if NUM_KERNELS > 1

@@ -31,9 +31,9 @@
 
 package conv_params_pkg;
     localparam int N              = 3;
-    localparam int N_Kernel       = 3;
-    localparam int IMAGE_WIDTH    = 32;
-    localparam int IMAGE_HEIGHT   = 32;
+    localparam int N_Kernel       = 1;
+    localparam int IMAGE_WIDTH    = 64;
+    localparam int IMAGE_HEIGHT   = 64;
     localparam int PIXEL_WIDTH    = 8;
     localparam int COEFF_WIDTH    = 8;
     localparam int OUT_WIDTH      = 16;

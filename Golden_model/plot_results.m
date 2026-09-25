@@ -14,15 +14,15 @@ clear; clc; close all;
 %  PARAMETERS  (must match the RTL/testbench configuration used to
 %  produce the hex files)
 %  -----------------------------------------------------------------------
-N            = 3;
-IMAGE_WIDTH  = 32;
-IMAGE_HEIGHT = 32;
+N            = 5;
+IMAGE_WIDTH  = 64;
+IMAGE_HEIGHT = 64;
 PIXEL_WIDTH  = 8;
 COEFF_WIDTH  = 8;
 OUT_BITS     = 16;
 RELU_ENABLE  = true;
 FRAC_BITS    = 4;      % already chosen from a prior sweep; fixed here
-NUM_KERNELS  = 3;
+NUM_KERNELS  = 1;
 
 % hex_dir is resolved relative to THIS script's own folder (not the
 % current working directory), so the script can be run from anywhere.
@@ -51,7 +51,12 @@ PAD_COLS_AFTER  = floor((N + 1) / 2);   % informational only, see note above
 kernels = zeros(N, N, NUM_KERNELS);
 
 if NUM_KERNELS >= 1
-    kernels(:, :, 1) = [1 0 -1; 1 0 -1; 1 0 -1];   % kernel 1: vertical edge detector
+    kernels(:, :, 1) = [ ...
+     0,  0, -1,  0,  0; ...
+     0, -1, -2, -1,  0; ...
+    -1, -2, 16, -2, -1; ...
+     0, -1, -2, -1,  0; ...
+     0,  0, -1,  0,  0];  % kernel 1: vertical edge detector
 end
 if NUM_KERNELS >= 2
     kernels(:, :, 2) = [1 1 1; 0 0 0; -1 -1 -1];   % kernel 2: horizontal edge detector

@@ -17,24 +17,9 @@ add wave -noupdate -radix hexadecimal /conv_top/intf/pixel_in_i
 add wave -noupdate -divider {Output Stream}
 add wave -noupdate -radix hexadecimal /conv_top/intf/result_ready_i
 add wave -noupdate -radix hexadecimal /conv_top/intf/result_valid_o
-<<<<<<< HEAD
-add wave -noupdate -radix hexadecimal -childformat {{{/conv_top/intf/result_o[15]} -radix hexadecimal} {{/conv_top/intf/result_o[14]} -radix hexadecimal} {{/conv_top/intf/result_o[13]} -radix hexadecimal} {{/conv_top/intf/result_o[12]} -radix hexadecimal} {{/conv_top/intf/result_o[11]} -radix hexadecimal} {{/conv_top/intf/result_o[10]} -radix hexadecimal} {{/conv_top/intf/result_o[9]} -radix hexadecimal} {{/conv_top/intf/result_o[8]} -radix hexadecimal} {{/conv_top/intf/result_o[7]} -radix hexadecimal} {{/conv_top/intf/result_o[6]} -radix hexadecimal} {{/conv_top/intf/result_o[5]} -radix hexadecimal} {{/conv_top/intf/result_o[4]} -radix hexadecimal} {{/conv_top/intf/result_o[3]} -radix hexadecimal} {{/conv_top/intf/result_o[2]} -radix hexadecimal} {{/conv_top/intf/result_o[1]} -radix hexadecimal} {{/conv_top/intf/result_o[0]} -radix hexadecimal}} -subitemconfig {{/conv_top/intf/result_o[15]} {-height 15 -radix hexadecimal} {/conv_top/intf/result_o[14]} {-height 15 -radix hexadecimal} {/conv_top/intf/result_o[13]} {-height 15 -radix hexadecimal} {/conv_top/intf/result_o[12]} {-height 15 -radix hexadecimal} {/conv_top/intf/result_o[11]} {-height 15 -radix hexadecimal} {/conv_top/intf/result_o[10]} {-height 15 -radix hexadecimal} {/conv_top/intf/result_o[9]} {-height 15 -radix hexadecimal} {/conv_top/intf/result_o[8]} {-height 15 -radix hexadecimal} {/conv_top/intf/result_o[7]} {-height 15 -radix hexadecimal} {/conv_top/intf/result_o[6]} {-height 15 -radix hexadecimal} {/conv_top/intf/result_o[5]} {-height 15 -radix hexadecimal} {/conv_top/intf/result_o[4]} {-height 15 -radix hexadecimal} {/conv_top/intf/result_o[3]} {-height 15 -radix hexadecimal} {/conv_top/intf/result_o[2]} {-height 15 -radix hexadecimal} {/conv_top/intf/result_o[1]} {-height 15 -radix hexadecimal} {/conv_top/intf/result_o[0]} {-height 15 -radix hexadecimal}} /conv_top/intf/result_o
-add wave -noupdate -radix hexadecimal /conv_top/intf/result_tlast_o
-=======
-add wave -noupdate -radix hexadecimal -childformat {{{/conv_top/intf/result_o[15]} -radix hexadecimal} {{/conv_top/intf/result_o[14]} -radix hexadecimal} {{/conv_top/intf/result_o[13]} -radix hexadecimal} {{/conv_top/intf/result_o[12]} -radix hexadecimal} {{/conv_top/intf/result_o[11]} -radix hexadecimal} {{/conv_top/intf/result_o[10]} -radix hexadecimal} {{/conv_top/intf/result_o[9]} -radix hexadecimal} {{/conv_top/intf/result_o[8]} -radix hexadecimal} {{/conv_top/intf/result_o[7]} -radix hexadecimal} {{/conv_top/intf/result_o[6]} -radix hexadecimal} {{/conv_top/intf/result_o[5]} -radix hexadecimal} {{/conv_top/intf/result_o[4]} -radix hexadecimal} {{/conv_top/intf/result_o[3]} -radix hexadecimal} {{/conv_top/intf/result_o[2]} -radix hexadecimal} {{/conv_top/intf/result_o[1]} -radix hexadecimal} {{/conv_top/intf/result_o[0]} -radix hexadecimal}} -subitemconfig {{/conv_top/intf/result_o[15]} {-radix hexadecimal} {/conv_top/intf/result_o[14]} {-radix hexadecimal} {/conv_top/intf/result_o[13]} {-radix hexadecimal} {/conv_top/intf/result_o[12]} {-radix hexadecimal} {/conv_top/intf/result_o[11]} {-radix hexadecimal} {/conv_top/intf/result_o[10]} {-radix hexadecimal} {/conv_top/intf/result_o[9]} {-radix hexadecimal} {/conv_top/intf/result_o[8]} {-radix hexadecimal} {/conv_top/intf/result_o[7]} {-radix hexadecimal} {/conv_top/intf/result_o[6]} {-radix hexadecimal} {/conv_top/intf/result_o[5]} {-radix hexadecimal} {/conv_top/intf/result_o[4]} {-radix hexadecimal} {/conv_top/intf/result_o[3]} {-radix hexadecimal} {/conv_top/intf/result_o[2]} {-radix hexadecimal} {/conv_top/intf/result_o[1]} {-radix hexadecimal} {/conv_top/intf/result_o[0]} {-radix hexadecimal}} /conv_top/intf/result_o
-add wave -noupdate -radix hexadecimal /conv_top/intf/result_tlast_o
-add wave -noupdate -expand -group FSM /conv_top/u_accelerator_top/u_fsm/load_cnt_q
-add wave -noupdate -expand -group FSM /conv_top/u_accelerator_top/u_fsm/load_cnt_d
-add wave -noupdate -expand -group FSM /conv_top/u_accelerator_top/u_fsm/exit_cnt_q
-add wave -noupdate -expand -group FSM /conv_top/u_accelerator_top/u_fsm/exit_cnt_d
-add wave -noupdate /conv_top/u_accelerator_top/u_fsm/stream_start_o
-add wave -noupdate /conv_top/u_accelerator_top/u_frame_buffer/rd_rst_addr_i
-add wave -noupdate /conv_top/u_accelerator_top/u_frame_buffer/rd_addr_q
-add wave -noupdate /conv_top/u_accelerator_top/u_frame_buffer/rd_addr_d
-add wave -noupdate /conv_top/u_accelerator_top/u_frame_buffer/rd_data_q
->>>>>>> 10c0c55f4f904b0d6ecf79fc838e54d583dca05c
+add wave -noupdate /conv_top/intf/result_o
 TreeUpdate [SetDefaultTree]
-WaveRestoreCursors {{Cursor 1} {4513837 ps} 0}
+WaveRestoreCursors {{Cursor 1} {1568395212 ps} 0}
 quietly wave cursor active 1
 configure wave -namecolwidth 150
 configure wave -valuecolwidth 100
@@ -50,8 +35,4 @@ configure wave -griddelta 40
 configure wave -timeline 0
 configure wave -timelineunits ns
 update
-<<<<<<< HEAD
-WaveRestoreZoom {15739015642 ps} {15740167598 ps}
-=======
-WaveRestoreZoom {3902500 ps} {5054456 ps}
->>>>>>> 10c0c55f4f904b0d6ecf79fc838e54d583dca05c
+WaveRestoreZoom {0 ps} {11032234500 ps}

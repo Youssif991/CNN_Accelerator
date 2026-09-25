@@ -2,69 +2,58 @@
 //////////////////////////////////////////////////////////////////////////////////
 // Engineer: Youssef
 //
-// Create Date: 09/14/2026
-// Design Name: CNN Convolution Datapath - Row Buffer Bank
+// Design Name: CNN Convolution Datapath - Row Buffer Bank (parameterized N)
 // Module Name: row_buffer_bank
 // Tool Versions: Vivado 2025.2
-// Description: Presents the whole NxN sliding convolution window, centred on the
-//              output pixel, out of N+1 rotating row buffers held in distributed
-//              RAM.
+// Description: Presents the whole NxN sliding convolution window, centred on
+//              the output pixel, out of N+1 rotating row buffers held in
+//              distributed RAM.
 //
-//              While padded row w is written into buffer (w mod N+1), buffers
-//              (w-1) ... (w-N) are read. Those rows are complete, so reading column
-//              c+1 out of a row the raster has already passed is a plain address
-//              rather than a lookahead, and the window lands centred on real row
-//              w - N. One asynchronous RAM read port per row is enough: the read
-//              address cycles 1, 2 ... W-1, 0 (see rd_col) and two flip-flops
-//              behind it give columns c and c-1. The read row select switches one
-//              cycle early at the last column so the flip-flop chain stays on one
-//              row across the row boundary.
-//
-//              Vertical zero padding comes from the caller's pad rows; the
-//              horizontal borders are the two tap multiplexers below, which cost
-//              no stream cycles, so the output stream stays gap-free.
-//
-//              Only the row storage is reset-free (an asynchronous reset would
-//              stop Vivado mapping it to distributed RAM); the output register is
-//              reset, and result_valid is not asserted until every buffer the taps
-//              read holds real data. The output register also makes window_o a
-//              clock-aligned signal for the MAC array.
-//
-//              See README.md (Design notes) for the derivation and the measurements.
+//              Generalized for any odd N >= 3 (previous version only worked
+//              for N = 3): each row group now builds its N column taps from
+//              an (N-1)-deep shift register behind the single RAM read port
+//              (tap m=N-1 is the raw read, 0-cycle delay; tap m=0 is the
+//              oldest, (N-1)-cycle delay). Each tap's true image column is
+//              col_i + (m - HALF), where HALF = (N-1)/2; a tap is zeroed
+//              whenever that column falls outside [0, IMAGE_WIDTH-1], which
+//              reproduces the exact N=3 left/right border behaviour of the
+//              original module and extends it to the (N-1)/2-wide borders
+//              needed for larger N.
 //
 // Dependencies: none (leaf module)
 //
 // Revision:
-//   0.01 - File Created.
+//   0.01 - File Created (N = 3 only).
+//   0.02 - Generalized column-tap generation and border zeroing for any
+//          odd N >= 3.
 //////////////////////////////////////////////////////////////////////////////////
 
 module row_buffer_bank #(
-    parameter N = 3,  // Window size (odd, >= 3)
+    parameter N           = 3,   // Window size (odd, >= 3)
     parameter IMAGE_WIDTH = 32,  // Row width in pixels
-    parameter PIXEL_WIDTH = 8  // Pixel width
+    parameter PIXEL_WIDTH = 8    // Pixel width
 ) (
     input  wire clk_i,
     input  wire rst_n_i,
-    input  wire en_i,  // Accepted pixel: store it and advance the row pointer
-    input  wire [$clog2(IMAGE_WIDTH)-1:0] col_i,  // Column of the accepted pixel
-    input  wire [PIXEL_WIDTH-1:0] pixel_i,  // Padded pixel stream
-    output wire [N*N*PIXEL_WIDTH-1:0] window_o  // Flattened NxN window, row-major, top row first
+    input  wire en_i,                                // Accepted pixel: store it and advance
+    input  wire [$clog2(IMAGE_WIDTH)-1:0] col_i,      // Column of the accepted pixel
+    input  wire [PIXEL_WIDTH-1:0] pixel_i,            // Padded pixel stream
+    output wire [N*N*PIXEL_WIDTH-1:0] window_o        // Flattened NxN window, row-major
 );
 
     // Parameters
-    localparam NUM_BUFS = N + 1;  // One buffer is being written while N are read
+    localparam NUM_BUFS  = N + 1;                         // One written while N are read
     localparam PTR_WIDTH = (NUM_BUFS > 2) ? $clog2(NUM_BUFS) : 1;
     localparam COL_WIDTH = $clog2(IMAGE_WIDTH);
+    localparam HALF      = (N - 1) / 2;                   // Half-window (border width)
+    localparam EXT_WIDTH = COL_WIDTH + 4;                  // Headroom for col_i + m compares
 
-    // Rotating write-buffer index (current state)
+    // Rotating write-buffer index
     reg [PTR_WIDTH-1:0] wr_buf_q;
-    // Rotating write-buffer index (next state)
     reg [PTR_WIDTH-1:0] wr_buf_d;
 
     // Last column of the row: the row is complete and the pointer rotates
     wire row_end = (col_i == IMAGE_WIDTH - 1);
-    // First column of the row: the left image border
-    wire row_start = (col_i == {COL_WIDTH{1'b0}});
 
     // Next-state
     always @(*) begin : next_state
@@ -81,10 +70,7 @@ module row_buffer_bank #(
     end
 
     // Row storage: one flat distributed-RAM array holding NUM_BUFS rows of
-    // IMAGE_WIDTH pixels each. Flattening is deliberate: Vivado only infers
-    // distributed RAM for a simple one-dimensional array with a computed
-    // address, not for a two-dimensional array with a variable first index
-    // (that form synthesizes to flip-flops plus read multiplexers).
+    // IMAGE_WIDTH pixels each.
     reg [PIXEL_WIDTH-1:0] row_mem[0:NUM_BUFS*IMAGE_WIDTH-1];
 
     // Write port (no reset: an async reset would break RAM inference)
@@ -92,58 +78,72 @@ module row_buffer_bank #(
         if (en_i) row_mem[wr_buf_q * IMAGE_WIDTH + col_i] <= pixel_i;
     end
 
-    // Read row select: normally the current write buffer, but advanced at the
-    // last column so that the taps stay on one row across the row boundary.
+    // Read row select: normally the current write buffer, but advanced at
+    // the last column so the taps stay on one row across the row boundary.
     wire [PTR_WIDTH-1:0] rd_ptr = (en_i && row_end) ? wr_buf_d : wr_buf_q;
 
     // Read column: one ahead of the write column, wrapping to 0 at the last
-    // column. The wrap is deliberate: it (a) pre-loads the c-1 tap boundary and
-    // (b) keeps the flip-flops on the read row. The value read there is the
-    // right image border and is discarded by the border mux.
+    // column (same pre-load trick as the original module).
     wire [COL_WIDTH-1:0] rd_col = row_end ? {COL_WIDTH{1'b0}} : col_i + 1'b1;
 
     // Combinational window (registered into window_q below)
     wire [N*N*PIXEL_WIDTH-1:0] window_d;
 
-    genvar g;
+    genvar g, m, k;
     generate
         for (g = 0; g < N; g = g + 1) begin : gen_row_taps
-            // Group g reads the buffer holding padded row w-N+g, which is window
-            // row g: group 0 is the oldest row, i.e. the top of the patch.
-            wire [PTR_WIDTH:0] read_index = {1'b0, rd_ptr} + (g + 1);
-            wire [PTR_WIDTH-1:0] rd_buf = (read_index >= NUM_BUFS) ? read_index[PTR_WIDTH-1:0] -
-                                          NUM_BUFS : read_index[PTR_WIDTH-1:0];
+
+            // Row group g reads the buffer holding padded row w-N+g (window
+            // row g, top of the patch first) - unchanged from the original.
+            wire [PTR_WIDTH:0]   read_index = {1'b0, rd_ptr} + (g + 1);
+            wire [PTR_WIDTH-1:0] rd_buf      = (read_index >= NUM_BUFS) ?
+                                                read_index[PTR_WIDTH-1:0] - NUM_BUFS :
+                                                read_index[PTR_WIDTH-1:0];
 
             wire [PIXEL_WIDTH-1:0] rd_data = row_mem[rd_buf * IMAGE_WIDTH + rd_col];
 
-            // Taps are the flip-flop chain of the single RAM read: the current
-            // read is column c+1, one delay back is column c and two delays back
-            // is column c-1. Across the row boundary the chain still lines up
-            // because the read row select switched at the last column (see
-            // rd_ptr); only the current read then comes from the next row, and
-            // that tap is the right border, which is zero there anyway.
-            wire [PIXEL_WIDTH-1:0] tap_base = row_end ? {PIXEL_WIDTH{1'b0}} : rd_data;
-            reg [PIXEL_WIDTH-1:0] tap_mid_q;
-            reg [PIXEL_WIDTH-1:0] tap_old_q;
+            // (N-1)-deep shift register behind the single RAM read.
+            // shift_q[0] is 1 cycle behind rd_data, shift_q[k] is (k+1)
+            // cycles behind.
+            wire [PIXEL_WIDTH-1:0] shift_q[0:N-2];
+            reg  [PIXEL_WIDTH-1:0] shift_r[0:N-2];
 
             always @(posedge clk_i) begin : tap_shift
+                integer si;
                 if (en_i) begin
-                    tap_mid_q <= rd_data;
-                    tap_old_q <= tap_mid_q;
+                    shift_r[0] <= rd_data;
+                    for (si = 1; si < N-1; si = si + 1)
+                        shift_r[si] <= shift_r[si-1];
                 end
             end
 
-            wire [PIXEL_WIDTH-1:0] tap_mid = tap_mid_q;
-            wire [PIXEL_WIDTH-1:0] tap_old = row_start ? {PIXEL_WIDTH{1'b0}} : tap_old_q;
+            for (k = 0; k < N-1; k = k + 1) begin : gen_shift_tap
+                assign shift_q[k] = shift_r[k];
+            end
 
-            assign window_d[((g)*N + 0)*PIXEL_WIDTH +: PIXEL_WIDTH] = tap_old;
-            assign window_d[((g)*N + 1)*PIXEL_WIDTH +: PIXEL_WIDTH] = tap_mid;
-            assign window_d[((g)*N + 2)*PIXEL_WIDTH +: PIXEL_WIDTH] = tap_base;
+            // Column taps: m = 0 (oldest/leftmost) .. N-1 (newest/rightmost).
+            // tap m = N-1 is rd_data itself (0-cycle delay); tap m < N-1 is
+            // shift_q[N-2-m] ((N-1-m)-cycle delay).
+            for (m = 0; m < N; m = m + 1) begin : gen_col_taps
+                wire [PIXEL_WIDTH-1:0] raw_tap = (m == N-1) ? rd_data : shift_q[N-2-m];
+
+                // This tap's true image column is col_i + (m - HALF). Zero
+                // it whenever that column falls outside [0, IMAGE_WIDTH-1],
+                // i.e. it belongs to the (unstored) horizontal border.
+                wire [EXT_WIDTH-1:0] col_ext    = {{(EXT_WIDTH-COL_WIDTH){1'b0}}, col_i} + m;
+                wire                 left_edge  = (col_ext < HALF);
+                wire                 right_edge = (col_ext >= (IMAGE_WIDTH + HALF));
+
+                wire [PIXEL_WIDTH-1:0] tap = (left_edge || right_edge) ?
+                                             {PIXEL_WIDTH{1'b0}} : raw_tap;
+
+                assign window_d[(g*N + m)*PIXEL_WIDTH +: PIXEL_WIDTH] = tap;
+            end
         end
     endgenerate
 
-    // Output register: latches the completed window so window_o is stable for a
-    // whole cycle (the caller's pipeline counts this stage).
+    // Output register: latches the completed window so window_o is stable
+    // for a whole cycle.
     reg [N*N*PIXEL_WIDTH-1:0] window_q;
 
     always @(posedge clk_i or negedge rst_n_i) begin : output_reg
