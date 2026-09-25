@@ -1,26 +1,49 @@
+//******************************************************************************
+// Engineer : Marwan
+// Create Date: 08/27/2026
+// Design Name: UVM Convolution Testbench Top
+// Module Name: conv_top
+// Tool Versions: Questa 2021
+// Description: Top-level testbench module for the convolution accelerator.
+//              Instantiates the DUT (accelerator_top) and the UVM interface
+//              (conv_intf) with parameters sourced from conv_params_pkg,
+//              generates clock and reset, and passes the virtual interface to
+//              the UVM test via config_db. All parameter values reference
+//              conv_params_pkg (the single source of truth) to ensure the
+//              interface and DUT always use identical dimensions.
+// Dependencies: conv_pack.svh, conv_params_pkg.svh, conv_intf.svh
+//
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+//******************************************************************************
+
 `include "conv_pack.svh"
-`include "conv_params.svh"
+`include "conv_params_pkg.svh"
 `include "conv_intf.svh"
 
 module conv_top();
     import conv_pack::*;
     import uvm_pkg::*;
+    import conv_params_pkg::*;
 
     // -------------------------------------------------------------------
-    // Testbench-side copy of the accelerator_top parameters. Change these
-    // (and only these) to match whatever DUT configuration you want to
-    // exercise; they flow into both the interface and the DUT instance
-    // below, so the two can never disagree.
+    // Testbench-side copy of the accelerator_top parameters. These are
+    // just aliases onto conv_params_pkg's localparams (the single source
+    // of truth) - change a dimension in CONV_PARAMS_PKG.SVH only; it flows
+    // into both the interface and the DUT instance below, so the two can
+    // never disagree.
     // -------------------------------------------------------------------
-    localparam int N            = 5;
-    localparam int IMAGE_WIDTH  = 8;
-    localparam int IMAGE_HEIGHT = 8;
-    localparam int PIXEL_WIDTH  = 8;
-    localparam int COEFF_WIDTH  = 8;
-    localparam int OUT_WIDTH    = 16;
-    localparam int ROUND_ENABLE = 1;
-    localparam int FRAC_BITS    = 4;
-    localparam int PIPE_STAGES  = 2;
+    localparam int N            = conv_params_pkg::N;
+    localparam int N_Kernel     = conv_params_pkg::N_Kernel;
+    localparam int IMAGE_WIDTH  = conv_params_pkg::IMAGE_WIDTH;
+    localparam int IMAGE_HEIGHT = conv_params_pkg::IMAGE_HEIGHT;
+    localparam int PIXEL_WIDTH  = conv_params_pkg::PIXEL_WIDTH;
+    localparam int COEFF_WIDTH  = conv_params_pkg::COEFF_WIDTH;
+    localparam int OUT_WIDTH    = conv_params_pkg::OUT_WIDTH;
+    localparam int ROUND_ENABLE = conv_params_pkg::ROUND_ENABLE;
+    localparam int FRAC_BITS    = conv_params_pkg::FRAC_BITS;
+    localparam int PIPE_STAGES  = conv_params_pkg::PIPE_STAGES;
 
     // 1. DUT reset handle
     bit rst_n_i;
@@ -35,6 +58,7 @@ module conv_top();
 
     conv_intf #(
         .N(N),
+        .N_Kernel(N_Kernel),
         .IMAGE_WIDTH(IMAGE_WIDTH),
         .IMAGE_HEIGHT(IMAGE_HEIGHT),
         .PIXEL_WIDTH(PIXEL_WIDTH),
@@ -46,6 +70,7 @@ module conv_top();
 
     accelerator_top #(
         .N(N),
+        .N_Kernel(N_Kernel),
         .IMAGE_WIDTH(IMAGE_WIDTH),
         .IMAGE_HEIGHT(IMAGE_HEIGHT),
         .PIXEL_WIDTH(PIXEL_WIDTH),
@@ -76,7 +101,7 @@ module conv_top();
     // 5. Test Execution
     initial begin
     uvm_config_db#(virtual conv_intf#(
-        N, IMAGE_WIDTH, IMAGE_HEIGHT, PIXEL_WIDTH, COEFF_WIDTH, OUT_WIDTH,
+        N, N_Kernel, IMAGE_WIDTH, IMAGE_HEIGHT, PIXEL_WIDTH, COEFF_WIDTH, OUT_WIDTH,
         ROUND_ENABLE, FRAC_BITS, PIPE_STAGES
     ))::set(null, "uvm_test_top", "conv_vif", intf);
 

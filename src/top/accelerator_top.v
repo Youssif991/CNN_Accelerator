@@ -21,32 +21,70 @@
 //                Stage 11: sat_round_unit saturated-result register
 //              conv_fsm's result_valid_o is registered, so it asserts exactly on
 //              the cycle row_buffer_bank presents the completed window; the
-//              top-level valid/last shift registers are PIPE_STAGES deep to stay
-//              aligned with the result. The FSM's drain counter uses
+//              tag pipeline (see result_tag_pipeline) is PIPE_STAGES deep to
+//              stay aligned with the result. The FSM's drain counter uses
 //              PIPE_STAGES + 2.
 //
 //              The pipeline freezes on output_fifo's registered high-water flag
-//              rather than on its exact ready signal: the exact-ready comparator
-//              hangs off the read pointer and the freeze net fans out to every
-//              clock enable, so it was the critical path. The guard band absorbs
-//              the flag's one cycle of staleness and output_fifo still gates the
-//              write on exact readiness. See README.md (Design notes).
+//              (fifo_almost_full) rather than on its exact ready signal: the
+//              exact-ready comparator hangs off the read pointer and the freeze
+//              net fans out to every clock enable, so it was the critical path.
+//              The (* max_fanout = 40 *) attribute stays attached to
+//              fifo_almost_full itself, right where it fans out, and the guard
+//              band inside output_fifo absorbs the flag's one cycle of
+//              staleness (output_fifo still gates the write on exact
+//              readiness). See README.md (Design notes).
 //
-// Dependencies: pixel_pad_inserter (src/datapath/pixel_pad_inserter.v)
-//               conv_fsm (src/control/conv_fsm.v)
-//               pixel_counter (src/control/pixel_counter.v)
-//               row_buffer_bank (src/datapath/row_buffer_bank.v)
-//               kernel_reg_bank (src/datapath/kernel_reg_bank.v)
-//               mac_chain (src/datapath/mac_chain.v)
-//               output_fifo (src/datapath/output_fifo.v)
-//               sat_round_unit (src/datapath/sat_round_unit.v)
+//              Multiple kernels (N_Kernel > 1): the host still streams the
+//              image exactly once, on pass 0 (kernel 0). frame_buffer captures
+//              every accepted real pixel during that live pass; conv_fsm then
+//              loops S_COMPUTE for kernels 1..N_Kernel-1, and for those passes
+//              pixel_source_mux feeds pixel_pad_inserter from frame_buffer
+//              instead of the host's pixel_in_i/pixel_valid_i (replay is
+//              always "valid" - the data is already in on-chip memory) and
+//              gates ready_o off so the host never re-sends the frame. Each
+//              output word is tagged with result_kernel_idx_o, its source
+//              kernel's index, carried through the pipeline by
+//              result_tag_pipeline alongside last_p/result_valid_p.
+//
+//              This module is structural only: every behavioural block that
+//              used to live directly in accelerator_top (the live/replay
+//              pixel mux + frame_buffer enables + host-ready gating, the
+//              last/kidx/valid pipeline shift registers, the pix_col
+//              arithmetic, and the output-word field unpack) has been moved
+//              into its own leaf module below and is only instantiated here.
+//              No functional change versus the previous revision - see each
+//              new leaf module's header for exactly what was extracted from
+//              where.
+//
+// Dependencies: pixel_source_mux    (src/control/pixel_source_mux.v)
+//               pixel_pad_inserter (src/datapath/pixel_pad_inserter.v)
+//               conv_fsm            (src/control/conv_fsm.v)
+//               pixel_counter       (src/control/pixel_counter.v)
+//               pixel_col_calc      (src/datapath/pixel_col_calc.v)
+//               row_buffer_bank     (src/datapath/row_buffer_bank.v)
+//               kernel_reg_bank     (src/datapath/kernel_reg_bank.v)
+//               frame_buffer        (src/datapath/frame_buffer.v)
+//               mac_chain           (src/datapath/mac_chain.v)
+//               output_fifo         (src/datapath/output_fifo.v)
+//               result_tag_pipeline (src/control/result_tag_pipeline.v)
+//               result_field_unpack (src/datapath/result_field_unpack.v)
+//               sat_round_unit      (src/datapath/sat_round_unit.v)
 //
 // Revision:
 //   0.01 - File Created.
+//   0.02 - Added N_Kernel: multiple output channels via a replayed pass
+//          per kernel, fed by a new internal frame_buffer.
+//   0.03 - Structural refactor only (no functional change): moved every
+//          behavioural block that lived directly in this module (pixel
+//          source mux + frame_buffer enables + host-ready gating, the
+//          last/kidx/valid tag pipeline, pix_col arithmetic, output-word
+//          field unpack) into new leaf modules, instantiated here.
 //////////////////////////////////////////////////////////////////////////////////
 
 module accelerator_top #(
     parameter N = 3,  // Kernel size (N >= 2)
+    parameter N_Kernel = 1,  // Number of kernels / output channels per job
     parameter IMAGE_WIDTH = 32,  // Input feature-map width
     parameter IMAGE_HEIGHT = 32,  // Input feature-map height (real rows)
     parameter PIXEL_WIDTH = 8,  // Input pixel width (unsigned)
@@ -70,127 +108,142 @@ module accelerator_top #(
     input wire kernel_wr_valid_i,  // Kernel coefficient write valid (host-paced)
     input wire [COEFF_WIDTH-1:0] kernel_wr_data_i,  // Kernel coefficient data
     input wire relu_en_i,  // ReLU enable (host-set per frame)
-    output wire busy_o,  // Frame in progress
-    output wire done_o,  // Frame complete
+    output wire busy_o,  // Job in progress (spans every kernel's pass)
+    output wire done_o,  // Job complete (all kernels done)
     output wire [1:0] state_o,  // FSM state (observability)
     output wire result_valid_o,  // Output word available (FIFO not empty)
     output wire [OUT_WIDTH-1:0] result_o,  // Output data (FIFO read)
-    output wire result_tlast_o,  // Last output word of the frame
+    output wire [(N_Kernel>1 ? $clog2(N_Kernel) : 1)-1:0] result_kernel_idx_o,  // Source kernel/channel of result_o
+    output wire result_tlast_o,  // Last output word of the current kernel's pass
     input wire result_ready_i,  // Output ready
-    output wire ready_o  // Accepting input pixels (AXI-Stream TREADY)
+    output wire ready_o  // Accepting input pixels (AXI-Stream TREADY); only asserts on the live pass
 );
+
+    localparam KIDX_WIDTH = (N_Kernel > 1) ? $clog2(N_Kernel) : 1;
 
     // Control-unit interconnect
     wire [PIX_ADDR_WIDTH-1:0] pix_addr;
     wire pix_last;
     wire kernel_we;
-    wire [$clog2(N*N)-1:0] kernel_addr;
+    wire [$clog2(N_Kernel*N*N)-1:0] kernel_addr;
     wire shift_valid;
-    wire stream_start;  // One-cycle pulse: arms pixel_pad_inserter
+    wire stream_start;  // One-cycle pulse: (re)arms pixel_pad_inserter for the current pass
     wire fsm_ready;  // conv_fsm's own readiness (gates the pad inserter)
     wire result_valid;
     wire rst_count;
+    wire [KIDX_WIDTH-1:0] kernel_idx;  // Current pass's kernel/channel index
+    wire replay_pass;  // High while the current pass replays frame_buffer (kernel_idx != 0)
 
     // Pad-inserter interconnect
     wire [PIXEL_WIDTH-1:0] padded_pixel;
     wire padded_pixel_valid;
+    wire pad_ready;  // pixel_pad_inserter's own ready, ungated by live/replay
+
+    // Multi-kernel pixel source mux interconnect
+    wire [PIXEL_WIDTH-1:0] fb_rd_data;
+    wire [PIXEL_WIDTH-1:0] pad_inserter_pixel_in;
+    wire                   pad_inserter_pixel_valid;
+    wire                   fb_wr_en;  // accepted a real host pixel (live pass capture)
+    wire                   fb_rd_en;  // consumed a replay pixel
 
     // Datapath interconnect
-    wire [$clog2(IMAGE_WIDTH)-1:0] pix_col;  // Column of the accepted pixel
+    wire [$clog2(IMAGE_WIDTH)-1:0] pix_col;  // Column of the pixel being presented
     wire [N*N*PIXEL_WIDTH-1:0] window;        // flattened NxN window (72 bits)
     wire [N*N*COEFF_WIDTH-1:0] kernel;
     wire signed [SUM_WIDTH-1:0] conv_sum;     // registered MAC-chain output
     wire signed [OUT_WIDTH-1:0] result;
 
     // Pipeline interconnect
-    wire signed [SUM_WIDTH-1:0] sum_to_sat;
     wire result_valid_p;  // result valid shifted with the pipeline data
     wire last_p;  // frame-last flag shifted with the pipeline data
+    wire [KIDX_WIDTH-1:0] kidx_p;  // source kernel index shifted with the pipeline data
     wire fifo_wr_ready;  // output FIFO write not full
-    wire fifo_almost_full;  // output FIFO registered high-water flag
+    // Back-pressure freeze net: output_fifo's registered high-water flag.
+    // max_fanout stays attached right at the net that fans out to every
+    // clock enable in the design.
+    (* max_fanout = 40 *) wire fifo_almost_full;
     wire fifo_rd_valid;  // output FIFO read not empty
-    wire [OUT_WIDTH:0] fifo_rd_data;  // {last, result}
+    wire [OUT_WIDTH+KIDX_WIDTH:0] fifo_rd_data;  // {last, kernel_idx, result}
 
-    // Back-pressure freeze: output_fifo's registered high-water flag. The FIFO
-    // write valid is gated by the same freeze, so the held word is enqueued once,
-    // when the freeze lifts, instead of on every stalled cycle.
-    (* max_fanout = 40 *) wire output_stall;
-
-    assign output_stall = fifo_almost_full;
-
-    // Frame-last flag: the last accepted pixel's result ends the frame
-    reg last_q;
-    always @(posedge clk_i or negedge rst_n_i) begin : last_reg
-        if (!rst_n_i) last_q <= 1'b0;
-        else if (!output_stall) last_q <= pix_last;
-    end
-
-    generate
-        if (PIPE_STAGES == 1) begin : gen_pipe_last1
-            reg last_p1;
-            always @(posedge clk_i or negedge rst_n_i) begin : stage
-                if (!rst_n_i) last_p1 <= 1'b0;
-                else if (!output_stall) last_p1 <= last_q;
-            end
-            assign last_p = last_p1;
-        end else if (PIPE_STAGES >= 2) begin : gen_pipe_lastn
-            reg [PIPE_STAGES-1:0] last_p1;
-            always @(posedge clk_i or negedge rst_n_i) begin : stage
-                if (!rst_n_i) last_p1 <= 0;
-                else if (!output_stall) last_p1 <= {last_p1[PIPE_STAGES-2:0], last_q};
-            end
-            assign last_p = last_p1[PIPE_STAGES-1];
-        end else begin : gen_no_pipe_last
-            assign last_p = last_q;
-        end
-    endgenerate
-
-    // The MAC chain output is already registered and feeds sat_round directly.
-    assign sum_to_sat = conv_sum;
-
-    // Pipeline valid: shifts with the data (holds while stalled)
-    generate
-        if (PIPE_STAGES == 1) begin : gen_pipe_valid1
-            reg valid_p1;
-            always @(posedge clk_i or negedge rst_n_i) begin : stage
-                if (!rst_n_i) valid_p1 <= 1'b0;
-                else if (!output_stall) valid_p1 <= result_valid;
-            end
-            assign result_valid_p = valid_p1;
-        end else if (PIPE_STAGES >= 2) begin : gen_pipe_validn
-            reg [PIPE_STAGES-1:0] valid_p1;
-            always @(posedge clk_i or negedge rst_n_i) begin : stage
-                if (!rst_n_i) valid_p1 <= 0;
-                else if (!output_stall) valid_p1 <= {valid_p1[PIPE_STAGES-2:0], result_valid};
-            end
-            assign result_valid_p = valid_p1[PIPE_STAGES-1];
-        end else begin : gen_no_pipe_valid
-            assign result_valid_p = result_valid;
-        end
-    endgenerate
-
-    // Output FIFO. The write valid is gated by the same freeze that holds the
-    // pipeline: while output_stall is high the result presented is the *held*
-    // word, so exact-ready gating alone would enqueue it again every cycle.
-    output_fifo #(
-        .DATA_WIDTH(OUT_WIDTH + 1),  // {frame_last, result}
-        .DEPTH(16)
-    ) u_out_fifo (
-        .clk_i     (clk_i),
-        .rst_n_i   (rst_n_i),
-        .wr_data_i ({last_p, result}),
-        .wr_valid_i(result_valid_p && !output_stall),
-        .wr_ready_o(fifo_wr_ready),
-        .wr_almost_full_o(fifo_almost_full),
-        .rd_data_o (fifo_rd_data),
-        .rd_valid_o(fifo_rd_valid),
-        .rd_ready_i(result_ready_i)
+    // Live/replay pixel source selection, frame_buffer enables, host ready
+    pixel_source_mux #(
+        .PIXEL_WIDTH(PIXEL_WIDTH)
+    ) u_pixel_source_mux (
+        .replay_pass_i(replay_pass),
+        .pixel_in_i   (pixel_in_i),
+        .pixel_valid_i(pixel_valid_i),
+        .fb_rd_data_i (fb_rd_data),
+        .pad_ready_i  (pad_ready),
+        .pixel_o      (pad_inserter_pixel_in),
+        .pixel_valid_o(pad_inserter_pixel_valid),
+        .fb_wr_en_o   (fb_wr_en),
+        .fb_rd_en_o   (fb_rd_en),
+        .host_ready_o (ready_o)
     );
 
-    // Streaming output (FWFT)
-    assign result_valid_o = fifo_rd_valid;
-    assign result_o       = fifo_rd_data[OUT_WIDTH-1:0];
-    assign result_tlast_o = fifo_rd_data[OUT_WIDTH];
+    // last/kidx sampling + last_p/kidx_p/result_valid_p pipeline shift chains
+    result_tag_pipeline #(
+        .PIPE_STAGES(PIPE_STAGES),
+        .KIDX_WIDTH (KIDX_WIDTH)
+    ) u_result_tag_pipeline (
+        .clk_i           (clk_i),
+        .rst_n_i         (rst_n_i),
+        .freeze_i        (fifo_almost_full),
+        .pix_last_i      (pix_last),
+        .kernel_idx_i    (kernel_idx),
+        .result_valid_i  (result_valid),
+        .last_p_o        (last_p),
+        .kidx_p_o        (kidx_p),
+        .result_valid_p_o(result_valid_p)
+    );
+
+    // Output FIFO. The write valid is gated by the same freeze that holds the
+    // pipeline: while fifo_almost_full is high the result presented is the
+    // *held* word, so exact-ready gating alone would enqueue it again every
+    // cycle.
+    output_fifo #(
+        .DATA_WIDTH(OUT_WIDTH + 1 + KIDX_WIDTH),  // {frame_last, kernel_idx, result}
+        .DEPTH(16)
+    ) u_out_fifo (
+        .clk_i           (clk_i),
+        .rst_n_i         (rst_n_i),
+        .wr_data_i       ({last_p, kidx_p, result}),
+        .wr_valid_i      (result_valid_p && !fifo_almost_full),
+        .wr_ready_o      (fifo_wr_ready),
+        .wr_almost_full_o(fifo_almost_full),
+        .rd_data_o       (fifo_rd_data),
+        .rd_valid_o      (fifo_rd_valid),
+        .rd_ready_i      (result_ready_i)
+    );
+
+    // Streaming output (FWFT): unpack the FIFO's {last, kernel_idx, result} word
+    result_field_unpack #(
+        .OUT_WIDTH (OUT_WIDTH),
+        .KIDX_WIDTH(KIDX_WIDTH)
+    ) u_result_field_unpack (
+        .fifo_rd_valid_i    (fifo_rd_valid),
+        .fifo_rd_data_i     (fifo_rd_data),
+        .result_valid_o     (result_valid_o),
+        .result_o           (result_o),
+        .result_kernel_idx_o(result_kernel_idx_o),
+        .result_tlast_o     (result_tlast_o)
+    );
+
+    // Frame buffer: captures the live pass, replays it for later kernels
+    frame_buffer#(
+        .IMAGE_WIDTH (IMAGE_WIDTH),
+        .IMAGE_HEIGHT(IMAGE_HEIGHT),
+        .PIXEL_WIDTH (PIXEL_WIDTH)
+    ) u_frame_buffer (
+        .clk_i        (clk_i),
+        .rst_n_i      (rst_n_i),
+        .wr_en_i      (fb_wr_en),
+        .wr_rst_addr_i(start_i),
+        .wr_data_i    (pixel_in_i),
+        .rd_en_i      (fb_rd_en),
+        .rd_rst_addr_i(stream_start),
+        .rd_data_o    (fb_rd_data)
+    );
 
     // Row zero-pad inserter
     pixel_pad_inserter #(
@@ -204,11 +257,11 @@ module accelerator_top #(
         .rst_n_i             (rst_n_i),
         .en_i                (fsm_ready),
         .start_i             (stream_start),
-        .pixel_in_i          (pixel_in_i),
-        .pixel_valid_i       (pixel_valid_i),
+        .pixel_in_i          (pad_inserter_pixel_in),
+        .pixel_valid_i       (pad_inserter_pixel_valid),
         .padded_pixel_o      (padded_pixel),
         .padded_pixel_valid_o(padded_pixel_valid),
-        .ready_o             (ready_o),
+        .ready_o             (pad_ready),
         .real_pixel_o        (),
         .last_pixel_o        ()
     );
@@ -221,13 +274,14 @@ module accelerator_top #(
         .COEFF_WIDTH   (COEFF_WIDTH),
         .PIPE_STAGES   (PIPE_STAGES),
         .PIX_ADDR_WIDTH(PIX_ADDR_WIDTH),
-        .STATE_WIDTH   (2)
+        .STATE_WIDTH   (2),
+        .N_Kernel   (N_Kernel)
     ) u_fsm (
         .clk_i           (clk_i),
         .rst_n_i         (rst_n_i),
         .start_i         (start_i),
         .pixel_valid_i   (padded_pixel_valid),
-        .output_stall_i  (output_stall),
+        .output_stall_i  (fifo_almost_full),
         .kernel_wr_valid_i(kernel_wr_valid_i),
         .kernel_data_i   (kernel_wr_data_i),
         .pix_addr_i      (pix_addr),
@@ -241,7 +295,9 @@ module accelerator_top #(
         .rst_count_o     (rst_count),
         .busy_o          (busy_o),
         .done_o          (done_o),
-        .state_o         (state_o)
+        .state_o         (state_o),
+        .kernel_idx_o    (kernel_idx),
+        .replay_o        (replay_pass)
     );
 
     // Pixel position counter (input), sized to the padded row count
@@ -260,7 +316,13 @@ module accelerator_top #(
 
     // Column of the pixel the pixel counter is presenting, used by the window
     // bank to place its taps and to zero them at the image's left/right borders.
-    assign pix_col = pix_addr % IMAGE_WIDTH;
+    pixel_col_calc #(
+        .IMAGE_WIDTH   (IMAGE_WIDTH),
+        .PIX_ADDR_WIDTH(PIX_ADDR_WIDTH)
+    ) u_pixel_col_calc (
+        .pix_addr_i(pix_addr),
+        .pix_col_o (pix_col)
+    );
 
     // Datapath
     // Centred sliding window out of rotating row buffers: each row is held in
@@ -282,13 +344,15 @@ module accelerator_top #(
 
     kernel_reg_bank #(
         .N           (N),
-        .COEFF_WIDTH (COEFF_WIDTH)
+        .COEFF_WIDTH (COEFF_WIDTH),
+        .N_Kernel (N_Kernel)
     ) u_kernel_reg_bank (
         .clk_i        (clk_i),
         .rst_n_i      (rst_n_i),
         .load_valid_i (kernel_wr_valid_i && kernel_we),
         .load_addr_i  (kernel_addr),
         .load_data_i  (kernel_wr_data_i),
+        .kernel_sel_i (kernel_idx),
         .kernel_o     (kernel)
     );
 
@@ -305,7 +369,7 @@ module accelerator_top #(
     ) u_mac_chain (
         .clk_i   (clk_i),
         .rst_n_i (rst_n_i),
-        .en_i    (!output_stall),
+        .en_i    (!fifo_almost_full),
         .window_i(window),
         .kernel_i(kernel),
         .sum_o   (conv_sum)
@@ -319,8 +383,8 @@ module accelerator_top #(
     ) u_sat_round_unit (
         .clk_i     (clk_i),
         .rst_n_i   (rst_n_i),
-        .en_i      (!output_stall),
-        .sum_i     (sum_to_sat),
+        .en_i      (!fifo_almost_full),
+        .sum_i     (conv_sum),
         .relu_en_i (relu_en_i),
         .result_o  (result)
     );

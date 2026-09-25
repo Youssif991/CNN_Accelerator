@@ -47,11 +47,12 @@ function void conv_drv::connect_phase(uvm_phase phase);
     super.connect_phase(phase);
 endfunction
 
-task conv_drv ::run_phase(uvm_phase phase);
+task conv_drv::run_phase(uvm_phase phase);
     super.run_phase(phase);
     forever begin
         seq_item_port.get_next_item(conv_item);
         @(conv_vif.drv_cb);
+
         conv_vif.drv_cb.start_i           <= conv_item.start_i;
         conv_vif.drv_cb.pixel_in_i        <= conv_item.pixel_in_i;
         conv_vif.drv_cb.pixel_valid_i     <= conv_item.pixel_valid_i;
@@ -59,6 +60,15 @@ task conv_drv ::run_phase(uvm_phase phase);
         conv_vif.drv_cb.kernel_wr_data_i  <= conv_item.kernel_wr_data_i;
         conv_vif.drv_cb.relu_en_i         <= conv_item.relu_en_i;
         conv_vif.drv_cb.result_ready_i    <= conv_item.result_ready_i;
+
+        if (conv_item.pixel_valid_i) begin
+            do @(conv_vif.drv_cb);
+            while (!conv_vif.drv_cb.ready_o);
+
+            // Transfer completed this cycle. Deassert valid so the DUT does
+            // not accept the same beat again while we fetch the next item.
+            conv_vif.drv_cb.pixel_valid_i <= 1'b0;
+        end
 
         seq_item_port.item_done();
     end
