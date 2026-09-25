@@ -18,15 +18,31 @@ close all;
 %% ------------------------------------------------------------------------
 % Parameters: these values must match the RTL/UVM configuration.
 % -------------------------------------------------------------------------
+<<<<<<< Updated upstream
 N            = 5;       % Kernel size: N x N
 IMAGE_WIDTH  = 8;       % RTL image width
 IMAGE_HEIGHT = 8;       % RTL image height
+=======
+N            = 3;       % Kernel size: N x N
+IMAGE_WIDTH  = 32;       % RTL image width
+IMAGE_HEIGHT = 32;       % RTL image height
+>>>>>>> Stashed changes
 PIXEL_WIDTH  = 8;       % Unsigned grayscale pixel width
 COEFF_WIDTH  = 8;       % Signed coefficient width (integer, fixed-point container)
 OUT_BITS     = 16;      % Signed output width
 RELU_ENABLE  = true;    % Must match the RTL ReLU enable
 PADDING      = 0;       % Zero padding
 STRIDE       = 1;       % Convolution stride
+<<<<<<< Updated upstream
+=======
+NUM_KERNELS  = 3;       % Number of kernels / output channels per job
+
+% --- Zero padding, derived automatically to match the RTL -----------------
+PAD_ROWS_BEFORE = floor((N - 1) / 2);
+PAD_ROWS_AFTER  = floor((N + 1) / 2);
+PAD_COLS_BEFORE = 1;
+PAD_COLS_AFTER  = 1;
+>>>>>>> Stashed changes
 
 % --- Fixed-point spec for the kernel -------------------------------------
 % The kernel below is defined in real (floating-point) coefficients that
@@ -92,10 +108,35 @@ kernel = [ ...
 0.0133, 0.0596, 0.0983, 0.0596, 0.0133; ...
 0.0030, 0.0133, 0.0219, 0.0133, 0.0030];
 
+<<<<<<< Updated upstream
 if size(kernel,1) ~= N || size(kernel,2) ~= N
     error('Kernel dimensions do not match N.');
 end
 
+=======
+% Kernel 0: Vertical Edge Detection
+kernels(:,:,1) = [ ...
+    1, 0, -1; ...
+    1, 0, -1; ...
+    1, 0, -1];
+
+% Kernel 1: Horizontal Edge Detection (if NUM_KERNELS > 1)
+if NUM_KERNELS > 1
+    kernels(:,:,2) = 1/9 *[ ...
+        1,  1,  1; ...
+        1,  1,  1; ...
+        1,  1,  1];
+
+   kernels(:,:,3) =[ ...
+        0 , -1 , 0; ...
+       -1 , 5 , -1; ...
+        0, -1 , 0];
+
+
+end
+
+% Add more kernel definitions here if NUM_KERNELS > 2
+>>>>>>> Stashed changes
 %% ------------------------------------------------------------------------
 % Quantize the kernel into fixed-point COEFF_WIDTH-bit signed integers.
 % -------------------------------------------------------------------------

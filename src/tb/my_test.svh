@@ -50,7 +50,7 @@ class my_test #(
         seq = conv_seq#(`CONV_PARAMS_LIST)::type_id::create("seq");
         seq.start(env_inst.agent_inst.conv_sequencer_inst);
 
-        phase.phase_done.set_drain_time(this, 1000ns);
+        phase.phase_done.set_drain_time(this, 100ns);
         phase.drop_objection(this);
     endtask
 endclass

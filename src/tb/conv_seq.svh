@@ -74,7 +74,7 @@ task  conv_seq::load_cycle(bit [COEFF_WIDTH-1:0] data = 'd0, bit result_ready = 
     conv_item item;
     item = conv_item::type_id::create("item");
     start_item(item);
-    item.start_i           = 1;
+    item.start_i           = 0;
     item.pixel_valid_i     = 0;
     item.pixel_in_i        = 'b0;
     item.kernel_wr_valid_i = kernel_wr_valid;
@@ -136,7 +136,11 @@ task conv_seq::body();
     end
     
     // Store results
+<<<<<<< Updated upstream
     for (int i = 0; i < IMAGE_HEIGHT * IMAGE_WIDTH; i++) begin
+=======
+    for (int i = 0; i < IMAGE_HEIGHT* IMAGE_WIDTH * N_Kernel; i++) begin
+>>>>>>> Stashed changes
         store_cycle(1'b1 , relu_en);
     end
 endtask

@@ -12,6 +12,17 @@
 //
 // Revision:
 // Revision 0.01 - File Created
+// Revision 0.02 - Fixed valid/ready handshake: the item's signals are now
+//                  held stable and re-driven every cycle until the DUT
+//                  actually accepts the beat (pixel_valid_i && ready_o).
+//                  Previously pixel_valid_i was forced low for one cycle
+//                  after every accepted beat before fetching the next
+//                  item, halving the accepted-pixel rate; before that fix,
+//                  the opposite bug (holding data/valid unconditionally
+//                  with no ready_o wait at all) caused the same beat to be
+//                  accepted multiple times. Non-pixel items (kernel loads,
+//                  idle bubbles) have no ready_o backpressure and always
+//                  advance after one clock edge.
 // Additional Comments:
 //******************************************************************************
 
@@ -49,9 +60,17 @@ endfunction
 
 task conv_drv ::run_phase(uvm_phase phase);
     super.run_phase(phase);
+<<<<<<< Updated upstream
     forever begin
         seq_item_port.get_next_item(conv_item);
         @(conv_vif.drv_cb);
+=======
+
+    seq_item_port.get_next_item(conv_item);
+
+    forever begin
+        // Drive the current item's signals (held stable until accepted).
+>>>>>>> Stashed changes
         conv_vif.drv_cb.start_i           <= conv_item.start_i;
         conv_vif.drv_cb.pixel_in_i        <= conv_item.pixel_in_i;
         conv_vif.drv_cb.pixel_valid_i     <= conv_item.pixel_valid_i;
@@ -60,7 +79,19 @@ task conv_drv ::run_phase(uvm_phase phase);
         conv_vif.drv_cb.relu_en_i         <= conv_item.relu_en_i;
         conv_vif.drv_cb.result_ready_i    <= conv_item.result_ready_i;
 
+<<<<<<< Updated upstream
         seq_item_port.item_done();
+=======
+        @(conv_vif.drv_cb);
+
+        // A pixel beat only completes once ready_o accepts it; any other
+        // item (kernel load, idle bubble) has no backpressure and always
+        // completes on this edge.
+        if (!conv_item.pixel_valid_i || conv_vif.drv_cb.ready_o) begin
+            seq_item_port.item_done();
+            seq_item_port.get_next_item(conv_item);
+        end
+>>>>>>> Stashed changes
     end
 endtask
 
