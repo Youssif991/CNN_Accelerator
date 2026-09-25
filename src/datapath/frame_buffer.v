@@ -131,8 +131,12 @@ module frame_buffer#(
     // uninitialized until written).
     reg [PIXEL_WIDTH-1:0] rd_data_q;
 
+    wire [ADDR_WIDTH-1:0] rd_addr_sel = rd_rst_addr_i ? {ADDR_WIDTH{1'b0}} :
+                                                          (rd_addr_q + 1'b1);
+    wire rd_en_eff = rd_rst_addr_i || rd_en_i;
+
     always @(posedge clk_i) begin : mem_read
-        if (rd_en_i) rd_data_q <= mem[rd_addr_d];
+        if (rd_en_eff) rd_data_q <= mem[rd_addr_sel];
     end
 
     assign rd_data_o = rd_data_q;

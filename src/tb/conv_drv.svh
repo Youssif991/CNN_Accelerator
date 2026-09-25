@@ -60,17 +60,11 @@ endfunction
 
 task conv_drv ::run_phase(uvm_phase phase);
     super.run_phase(phase);
-<<<<<<< Updated upstream
-    forever begin
-        seq_item_port.get_next_item(conv_item);
-        @(conv_vif.drv_cb);
-=======
 
     seq_item_port.get_next_item(conv_item);
 
     forever begin
         // Drive the current item's signals (held stable until accepted).
->>>>>>> Stashed changes
         conv_vif.drv_cb.start_i           <= conv_item.start_i;
         conv_vif.drv_cb.pixel_in_i        <= conv_item.pixel_in_i;
         conv_vif.drv_cb.pixel_valid_i     <= conv_item.pixel_valid_i;
@@ -79,9 +73,6 @@ task conv_drv ::run_phase(uvm_phase phase);
         conv_vif.drv_cb.relu_en_i         <= conv_item.relu_en_i;
         conv_vif.drv_cb.result_ready_i    <= conv_item.result_ready_i;
 
-<<<<<<< Updated upstream
-        seq_item_port.item_done();
-=======
         @(conv_vif.drv_cb);
 
         // A pixel beat only completes once ready_o accepts it; any other
@@ -91,7 +82,6 @@ task conv_drv ::run_phase(uvm_phase phase);
             seq_item_port.item_done();
             seq_item_port.get_next_item(conv_item);
         end
->>>>>>> Stashed changes
     end
 endtask
 

@@ -144,15 +144,8 @@ task conv_seq::body();
     end
     
     // Store results
-<<<<<<< HEAD
-<<<<<<< Updated upstream
-    for (int i = 0; i < IMAGE_HEIGHT * IMAGE_WIDTH; i++) begin
-=======
+
     for (int i = 0; i < IMAGE_HEIGHT* IMAGE_WIDTH * N_Kernel; i++) begin
->>>>>>> Stashed changes
-=======
-    for (int i = 0; i < IMAGE_HEIGHT * IMAGE_WIDTH * N_Kernel; i++) begin
->>>>>>> 10c0c55f4f904b0d6ecf79fc838e54d583dca05c
         store_cycle(1'b1 , relu_en);
     end
 endtask
